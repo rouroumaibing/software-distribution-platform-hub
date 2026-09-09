@@ -1,0 +1,357 @@
+package handler
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/middleware"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/service"
+)
+
+type PipelineRunHandler struct{ svc *service.PipelineRunService }
+
+func NewPipelineRunHandler(svc *service.PipelineRunService) *PipelineRunHandler {
+	return &PipelineRunHandler{svc: svc}
+}
+
+func (h *PipelineRunHandler) RegisterRoutes(rg *gin.RouterGroup) {
+	rg.POST("/pipelines/:id/runs", h.Trigger)
+	rg.GET("/pipelines/:id/runs", h.ListByPipeline)
+	rg.GET("/runs/:id", h.Get)
+	rg.GET("/runs/:id/tasks", h.ListTasks)
+	rg.GET("/runs/:id/progress", h.Progress)
+	rg.POST("/runs/:id/redispatch", h.Redispatch)
+	rg.POST("/pipelines/:id/runs/:runId/tasks/:taskName/decision", h.Approve)
+}
+
+// Trigger godoc
+// @Summary Trigger a pipeline run
+// @Description Assembles a PipelineRunSpec from the pipeline's current stages/tasks and dispatches it to a cluster Runner. Set targetClusters to fan the same trigger out to multiple environments (one independent run per cluster); ignored when clusterId is set.
+// @Tags runs
+// @Accept json
+// @Produce json
+// @Param pipelineId path string true "Pipeline ID (UUID)"
+// @Param request body models.TriggerRequest true "Trigger request"
+// @Success 201 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /pipelines/{pipelineId}/runs [post]
+func (h *PipelineRunHandler) Trigger(c *gin.Context) {
+	pipelineID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var req models.TriggerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	runs, err := h.svc.Trigger(pipelineID, &req)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.Created(c, runs)
+}
+
+// Get godoc
+// @Summary Get a pipeline run by ID
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Router /runs/{id} [get]
+func (h *PipelineRunHandler) Get(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	item, err := h.svc.Get(id)
+	if err != nil {
+		common.Fail(c, http.StatusNotFound, err)
+		return
+	}
+	common.OK(c, item)
+}
+
+// ListByPipeline godoc
+// @Summary List pipeline runs for a pipeline
+// @Tags runs
+// @Produce json
+// @Param pipelineId path string true "Pipeline ID (UUID)"
+// @Param page query int false "page (default 1)"
+// @Param pageSize query int false "page size (default 20, max 100)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /pipelines/{pipelineId}/runs [get]
+func (h *PipelineRunHandler) ListByPipeline(c *gin.Context) {
+	pipelineID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	p := common.ParsePagination(c)
+	items, total, err := h.svc.ListByPipeline(pipelineID, p)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OKPaged(c, items, total, p)
+}
+
+// ListAll godoc
+// @Summary List pipeline runs across all pipelines (Run Center)
+// @Tags runs
+// @Produce json
+// @Param phase query string false "filter by phase, e.g. Failed / Running / Succeeded"
+// @Param page query int false "page (default 1)"
+// @Param pageSize query int false "page size (default 20, max 100)"
+// @Success 200 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /runs [get]
+func (h *PipelineRunHandler) ListAll(c *gin.Context) {
+	p := common.ParsePagination(c)
+	items, total, err := h.svc.ListAll(p, c.Query("phase"))
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OKPaged(c, items, total, p)
+}
+
+// ListTasks godoc
+// @Summary List tasks of a pipeline run
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /runs/{id}/tasks [get]
+func (h *PipelineRunHandler) ListTasks(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	items, err := h.svc.ListTasks(id)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OK(c, items)
+}
+
+// Progress godoc
+// @Summary Get a pipeline run's live progress (phase + per-task status)
+// @Description Lightweight status endpoint for high-frequency console polling; returns the run phase and per-task status rows, not the full pipeline definition.
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Router /runs/{id}/progress [get]
+func (h *PipelineRunHandler) Progress(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	run, tasks, err := h.svc.Progress(id)
+	if err != nil {
+		common.Fail(c, http.StatusNotFound, err)
+		return
+	}
+	common.OK(c, gin.H{
+		"phase":   run.Phase,
+		"message": run.Message,
+		"tasks":   tasks,
+	})
+}
+
+// Redispatch godoc
+// @Summary Re-deliver a pipeline run's spec to its cluster
+// @Description Re-enqueues a fresh dispatch job carrying the last payload for a run whose delivery is stuck (failed/dead) or unconfirmed. Succeeds even if the Runner is offline; the job is delivered on reconnect or by the sweeper. A run stuck in Failed is reset to Pending.
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /runs/{id}/redispatch [post]
+func (h *PipelineRunHandler) Redispatch(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	job, err := h.svc.Redispatch(c.Request.Context(), id)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OK(c, job)
+}
+
+// GetLogs godoc
+// @Summary Get a task's (or run-level) streamed logs for a pipeline run
+// @Description Returns the ordered log chunks the hub persisted as a Runner streamed them over MessageLogChunk. Use the :name path param for a specific DAG task, or the /runs/:id/log variant for run-level output. Chunks are served in emission order.
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Param name path string true "Task name; the run-level log uses the bucket __run__"
+// @Param page query int false "page (default 1)"
+// @Param pageSize query int false "page size (default 20, max 100)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Router /runs/{id}/tasks/{name}/log [get]
+func (h *PipelineRunHandler) GetLogs(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	// :name comes from the /tasks/:name/log route; the /runs/:id/log route
+	// has no :name, so fall back to the query param or the run-level bucket.
+	taskName := c.Param("name")
+	if taskName == "" {
+		taskName = c.Query("task")
+	}
+	if taskName == "" {
+		taskName = models.RunLevelLogBucket
+	}
+	p := common.ParsePagination(c)
+	items, total, err := h.svc.GetLogs(id, taskName, p)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OKPaged(c, items, total, p)
+}
+
+// ApprovalDecisionRequest is the body of the approval gating endpoint.
+type ApprovalDecisionRequest struct {
+	// Approved is true to sign off, false to reject.
+	Approved bool `json:"approved"`
+	// Approver optionally overrides the identity recorded on the Runner;
+	// defaults to the authenticated user (or the dev user in dev mode).
+	Approver string `json:"approver,omitempty"`
+	// Reason is free text for the audit trail (stored by the Runner).
+	Reason string `json:"reason,omitempty"`
+}
+
+// Approve relays an approver's decision for a paused Approval task to the
+// Runner via the gateway. Approver defaults to the current user; the body
+// may override it (e.g. for service accounts or dev mode without SSO).
+// Approve godoc
+// @Summary Submit an approval decision for a paused Approval task
+// @Description Relays an approver's decision to the Runner via the gateway. Approver defaults to the current user.
+// @Tags runs
+// @Accept json
+// @Produce json
+// @Param pipelineId path string true "Pipeline ID (UUID)"
+// @Param runId path string true "Pipeline Run ID (UUID)"
+// @Param taskName path string true "Task name awaiting approval"
+// @Param request body ApprovalDecisionRequest true "Approval decision"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /pipelines/{pipelineId}/runs/{runId}/tasks/{taskName}/decision [post]
+func (h *PipelineRunHandler) Approve(c *gin.Context) {
+	pipelineID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	runID, err := uuid.Parse(c.Param("runId"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	taskName := c.Param("taskName")
+
+	var req ApprovalDecisionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+
+	approver := req.Approver
+	if approver == "" {
+		if id, ok := middleware.CurrentUserID(c); ok {
+			approver = id.String()
+		}
+	}
+
+	if err := h.svc.Approve(c.Request.Context(), pipelineID, runID, taskName, req.Approved, approver); err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OK(c, gin.H{"message": "approval decision dispatched", "taskName": taskName, "approved": req.Approved})
+}
+
+// RolloutControlRequest is the body of the rollout control endpoint.
+type RolloutControlRequest struct {
+	// Action is one of pause | promote | rollback.
+	Action string `json:"action"`
+	// Operator optionally overrides the identity recorded on the Runner;
+	// defaults to the authenticated user (or the dev user in dev mode).
+	Operator string `json:"operator,omitempty"`
+}
+
+// ControlRollout relays an operator's progressive-delivery command (pause /
+// promote / rollback) for a Release task's Rollout to the Runner via the
+// gateway. Operator defaults to the current user. ControlRollout godoc
+// @Summary Send a pause/promote/rollback command to a Release task's Rollout
+// @Description Relays the operator command to the Runner via the gateway; the resulting phase change streams back via status updates.
+// @Tags runs
+// @Accept json
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Param name path string true "Release task name"
+// @Param request body RolloutControlRequest true "Rollout control command"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /runs/{id}/tasks/{name}/rollout [post]
+func (h *PipelineRunHandler) ControlRollout(c *gin.Context) {
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	taskName := c.Param("name")
+
+	var req RolloutControlRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+
+	operator := req.Operator
+	if operator == "" {
+		if id, ok := middleware.CurrentUserID(c); ok {
+			operator = id.String()
+		}
+	}
+
+	if err := h.svc.ControlRollout(c.Request.Context(), runID, taskName, runnerapi.RolloutAction(req.Action), operator); err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OK(c, gin.H{"message": "rollout control dispatched", "taskName": taskName, "action": req.Action})
+}

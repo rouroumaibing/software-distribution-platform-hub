@@ -1,0 +1,43 @@
+basic:
+  # k8s 资源名统一用短名（与 deploy/manifests、console nginx 反代、runner gateway url 一致）；
+  # 镜像名才是全名
+  component: hub
+  replicaCount: 1
+
+service:
+  containerPort: 8080
+  externPort: 8080
+  nodePort: 30080
+
+image:
+  imageAddr: localhost:5000/software-distribution-platform-hub:v0.0.1
+  pullPolicy: Always
+
+resources:
+  resources_cpu_requests: 100m
+  resources_cpu_limits: 500m
+  resources_mem_requests: 128Mi
+  resources_mem_limits: 512Mi
+
+# gateway 配置须与 runner chart 成对修改
+gateway:
+  path: /gateway/ws
+  token: sdp-dev-token-2026
+
+# hub 仅支持 postgres，实例需先就绪（P0 由 deploy/manifests/10-postgres.yaml 提供）
+postgres:
+  host: postgres.sdp-system.svc
+  port: "5432"
+  user: sdp
+  pwd: sdp
+  dbname: sdp
+
+# 制品存储（G5）：local 驱动零依赖；切 s3 时补 endpoint/accessKey/secretKey/bucket
+artifact:
+  driver: local
+  localRoot: /data/artifacts
+  publicUrl: http://hub.sdp-system.svc:8080
+  storage: 10Gi
+
+log:
+  level: info

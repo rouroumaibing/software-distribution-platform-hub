@@ -1,0 +1,76 @@
+# Hub（G5 local 制品驱动 + gateway 服务端）。
+# PUBLIC_URL 用集群内 svc 地址：签名 URL 的关键消费方是 runner 的
+# releaseContainer（P3 拉 chart）。浏览器下载走 P2 时再补主机侧通路。
+# 主机侧入口：kind extraPortMappings 8080 -> 30080。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hub
+  namespace: sdp-system
+  labels:
+    app: hub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hub
+  template:
+    metadata:
+      labels:
+        app: hub
+    spec:
+      containers:
+        - name: hub
+          image: localhost:5000/software-distribution-platform-hub:v0.0.1
+          imagePullPolicy: Always
+          env:
+            - name: HUB_ADDR
+              value: ":8080"
+            - name: GATEWAY_PATH
+              value: "/gateway/ws"
+            - name: GATEWAY_TOKEN
+              value: "sdp-dev-token-2026"
+            - name: DB_DSN
+              value: "postgres://sdp:sdp@postgres.sdp-system.svc:5432/sdp?sslmode=disable"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: ARTIFACT_STORE_DRIVER
+              value: "local"
+            - name: ARTIFACT_STORE_LOCAL_ROOT
+              value: "/data/artifacts"
+            - name: ARTIFACT_STORE_PUBLIC_URL
+              value: "http://hub.sdp-system.svc:8080"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: artifacts
+              mountPath: /data/artifacts
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: hub-artifacts
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hub-artifacts
+  namespace: sdp-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hub
+  namespace: sdp-system
+spec:
+  type: NodePort
+  selector:
+    app: hub
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080

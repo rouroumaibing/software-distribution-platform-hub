@@ -1,0 +1,46 @@
+package models
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// ComponentConfig is a single key/value parameter for a component. A row
+// with EnvironmentID == nil is the global default; a row with it set
+// overrides the default for just that environment.
+type ComponentConfig struct {
+	ID            uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	ComponentID   uuid.UUID  `gorm:"type:uuid;not null;index" json:"componentId"`
+	EnvironmentID *uuid.UUID `gorm:"type:uuid" json:"environmentId,omitempty"`
+
+	Key string `gorm:"size:128;not null" json:"key"`
+
+	Value     string `gorm:"type:text" json:"value,omitempty"`
+	IsSecret  bool   `gorm:"not null;default:false" json:"isSecret"`
+	SecretRef string `gorm:"size:128" json:"secretRef,omitempty"`
+
+	Description string     `json:"description"`
+	CreatedBy   *uuid.UUID `gorm:"type:uuid" json:"createdBy,omitempty"`
+	UpdatedBy   *uuid.UUID `gorm:"type:uuid" json:"updatedBy,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+func (ComponentConfig) TableName() string { return "component_configs" }
+
+// ComponentConfigHistory is an append-only audit trail; a row is written
+// on every create/update/delete against ComponentConfig.
+type ComponentConfigHistory struct {
+	ID            uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	ComponentID   uuid.UUID  `gorm:"type:uuid;not null;index" json:"componentId"`
+	EnvironmentID *uuid.UUID `gorm:"type:uuid" json:"environmentId,omitempty"`
+	Key           string     `gorm:"size:128;not null" json:"key"`
+	Action        string     `gorm:"size:16;not null" json:"action"`
+	OldValue      string     `gorm:"type:text" json:"oldValue,omitempty"`
+	NewValue      string     `gorm:"type:text" json:"newValue,omitempty"`
+	ChangedBy     *uuid.UUID `gorm:"type:uuid" json:"changedBy,omitempty"`
+	ChangedAt     time.Time  `gorm:"not null;default:now()" json:"changedAt"`
+}
+
+func (ComponentConfigHistory) TableName() string { return "component_config_history" }

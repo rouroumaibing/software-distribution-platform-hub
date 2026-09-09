@@ -1,0 +1,69 @@
+# Hub 的 Postgres（hub 仅支持 postgres driver，见 internal/db/db.go）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: sdp-system
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: sdp-system
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: localhost:5000/postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: sdp
+            - name: POSTGRES_PASSWORD
+              value: sdp
+            - name: POSTGRES_DB
+              value: sdp
+            # dev-only：kind 单机内网 trust 认证；生产 chart 必须改回 scram+secret。
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "sdp", "-d", "sdp"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: sdp-system
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

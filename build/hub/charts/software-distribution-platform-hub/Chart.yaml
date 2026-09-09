@@ -1,0 +1,4 @@
+apiVersion: v2
+name: software-distribution-platform-hub
+description: software-distribution-platform-hub charts
+version: 0.0.1

@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.basic.component }}
+  labels:
+    app: {{ .Values.basic.component }}
+    version: v1
+spec:
+  replicas: {{ .Values.basic.replicaCount }}
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: {{ .Values.basic.component }}
+      version: v1
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        app: {{ .Values.basic.component }}
+        version: v1
+    spec:
+      containers:
+        - name: container-1
+          env:
+            - name: HUB_ADDR
+              value: ":{{ .Values.service.containerPort }}"
+            - name: GATEWAY_PATH
+              value: {{ .Values.gateway.path }}
+            - name: GATEWAY_TOKEN
+              value: {{ .Values.gateway.token }}
+            - name: DB_DSN
+              value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.pwd }}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.dbname }}?sslmode=disable"
+            - name: LOG_LEVEL
+              value: {{ .Values.log.level }}
+            - name: ARTIFACT_STORE_DRIVER
+              value: {{ .Values.artifact.driver }}
+            - name: ARTIFACT_STORE_LOCAL_ROOT
+              value: {{ .Values.artifact.localRoot }}
+            - name: ARTIFACT_STORE_PUBLIC_URL
+              value: {{ .Values.artifact.publicUrl }}
+          image: {{ .Values.image.imageAddr }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          resources:
+            requests:
+              cpu: {{ .Values.resources.resources_cpu_requests }}
+              memory: {{ .Values.resources.resources_mem_requests }}
+            limits:
+              cpu: {{ .Values.resources.resources_cpu_limits }}
+              memory: {{ .Values.resources.resources_mem_limits }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.containerPort }}
+              protocol: TCP
+          volumeMounts:
+            - name: artifacts
+              mountPath: {{ .Values.artifact.localRoot }}
+      volumes:
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ .Values.basic.component }}-artifacts
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  progressDeadlineSeconds: 600

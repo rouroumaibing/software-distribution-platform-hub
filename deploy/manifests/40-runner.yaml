@@ -1,0 +1,31 @@
+# Runner：controller-runtime manager + 到 hub 的出站 gateway 长连接。
+# HUB_GATEWAY_URL 用集群内 svc DNS；TOKEN 与 hub 的 GATEWAY_TOKEN 一致。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runner
+  namespace: sdp-system
+  labels:
+    app: runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: runner
+  template:
+    metadata:
+      labels:
+        app: runner
+    spec:
+      serviceAccountName: sdp-runner
+      containers:
+        - name: runner
+          image: localhost:5000/software-distribution-platform-runner:v0.0.1
+          imagePullPolicy: Always
+          env:
+            - name: HUB_GATEWAY_URL
+              value: "ws://hub.sdp-system.svc:8080/gateway/ws"
+            - name: CLUSTER_NAME
+              value: "local-dev"
+            - name: CLUSTER_AUTH_TOKEN
+              value: "sdp-dev-token-2026"
