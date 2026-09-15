@@ -1,0 +1,573 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Control plane API for the K8s software distribution platform: orgs, catalogs, components, pipelines, runs, clusters and permissions, plus a Runner WebSocket gateway.",
+        "title": "Software Distribution Platform Hub API",
+        "termsOfService": "http://swagger.io/terms/",
+        "contact": {
+            "name": "Platform Team"
+        },
+        "version": "1.0"
+    },
+    "host": "localhost:8080",
+    "basePath": "/api/v1",
+    "paths": {
+        "/pipelines/{pipelineId}/runs": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "List pipeline runs for a pipeline",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "pipelineId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (default 20, max 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Assembles a PipelineRunSpec from the pipeline's current stages/tasks and dispatches it to a cluster Runner. Set targetClusters to fan the same trigger out to multiple environments (one independent run per cluster); ignored when clusterId is set.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Trigger a pipeline run",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "pipelineId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Trigger request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.TriggerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/pipelines/{pipelineId}/runs/{runId}/tasks/{taskName}/decision": {
+            "post": {
+                "description": "Relays an approver's decision to the Runner via the gateway. Approver defaults to the current user.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Submit an approval decision for a paused Approval task",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "pipelineId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "runId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Task name awaiting approval",
+                        "name": "taskName",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Approval decision",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.ApprovalDecisionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "List pipeline runs across all pipelines (Run Center)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "filter by phase, e.g. Failed / Running / Succeeded",
+                        "name": "phase",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (default 20, max 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Get a pipeline run by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/progress": {
+            "get": {
+                "description": "Lightweight status endpoint for high-frequency console polling; returns the run phase and per-task status rows, not the full pipeline definition.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Get a pipeline run's live progress (phase + per-task status)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/redispatch": {
+            "post": {
+                "description": "Re-enqueues a fresh dispatch job carrying the last payload for a run whose delivery is stuck (failed/dead) or unconfirmed. Succeeds even if the Runner is offline; the job is delivered on reconnect or by the sweeper. A run stuck in Failed is reset to Pending.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Re-deliver a pipeline run's spec to its cluster",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/tasks": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "List tasks of a pipeline run",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/tasks/{name}/log": {
+            "get": {
+                "description": "Returns the ordered log chunks the hub persisted as a Runner streamed them over MessageLogChunk. Use the :name path param for a specific DAG task, or the /runs/:id/log variant for run-level output. Chunks are served in emission order.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Get a task's (or run-level) streamed logs for a pipeline run",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Task name; the run-level log uses the bucket __run__",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page (default 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "page size (default 20, max 100)",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/tasks/{name}/rollout": {
+            "post": {
+                "description": "Relays the operator command to the Runner via the gateway; the resulting phase change streams back via status updates.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Send a pause/promote/rollback command to a Release task's Rollout",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Release task name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Rollout control command",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.RolloutControlRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/common.Envelope"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "common.Envelope": {
+            "type": "object",
+            "properties": {
+                "data": {},
+                "error": {
+                    "type": "string"
+                },
+                "errorCode": {
+                    "type": "string"
+                }
+            }
+        },
+        "handler.ApprovalDecisionRequest": {
+            "type": "object",
+            "properties": {
+                "approved": {
+                    "description": "Approved is true to sign off, false to reject.",
+                    "type": "boolean"
+                },
+                "approver": {
+                    "description": "Approver optionally overrides the identity recorded on the Runner;\ndefaults to the authenticated user (or the dev user in dev mode).",
+                    "type": "string"
+                },
+                "reason": {
+                    "description": "Reason is free text for the audit trail (stored by the Runner).",
+                    "type": "string"
+                }
+            }
+        },
+        "handler.RolloutControlRequest": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "description": "Action is one of pause | promote | rollback.",
+                    "type": "string"
+                },
+                "operator": {
+                    "description": "Operator optionally overrides the identity recorded on the Runner;\ndefaults to the authenticated user (or the dev user in dev mode).",
+                    "type": "string"
+                }
+            }
+        },
+        "models.TriggerRequest": {
+            "type": "object"
+        }
+    },
+    "securityDefinitions": {
+        "BearerAuth": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header"
+        }
+    }
+}

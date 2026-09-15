@@ -33,3 +33,20 @@ func (r *BindingRepository) GetByComponentAndUser(componentID, userID uuid.UUID)
 	}
 	return &b, nil
 }
+
+// ListMatching returns every ComponentRoleBinding on a component that
+// applies to the subject, merging §7 subject bindings (user/group) with V1
+// legacy per-user bindings (user_id set, subject_type empty). Group
+// bindings are only included when the subject actually belongs to the group,
+// so an empty groups slice simply skips the group branch.
+func (r *BindingRepository) ListMatching(componentID uuid.UUID, userID uuid.UUID, groups []string) ([]models.ComponentRoleBinding, error) {
+	var bindings []models.ComponentRoleBinding
+	userStr := userID.String()
+	conds := r.DB.Where("subject_type = ? AND subject_id = ?", "user", userStr).
+		Or("user_id = ?", userID) // V1 legacy rows
+	if len(groups) > 0 {
+		conds = conds.Or("subject_type = ? AND subject_id IN ?", "group", groups)
+	}
+	err := r.DB.Where("component_id = ?", componentID).Where(conds).Find(&bindings).Error
+	return bindings, err
+}

@@ -1,4 +1,6 @@
 # ===== 构建产物（生成物，应清理） =====
+# 注意：2026-09-15 起 make build 输出到 output/bin/（产物统一在 output/ 下），
+# 这里的 bin/ 是历史位置，保留以防旧检出残留。
 bin/
 *.exe
 *.test
@@ -6,11 +8,23 @@ bin/
 coverage/
 *.err.txt
 *_err.txt
+*.prof
+*.coverprofile
 
-# ===== swaggo 生成的 API 文档（可由 `swag init` 重新生成） =====
-docs/docs.go
-docs/swagger.json
-docs/swagger.yaml
+# 裸跑 `go build ./cmd/hub` 时，Go 按主包目录名把二进制丢在**仓根**（不是 bin/），
+# 于是绕过了上面的 `bin/`。必须写成锚定的 `/hub`：
+# 裸写 `hub` 会连带忽略源码目录 `cmd/hub/`（gitignore 按任意层级路径名匹配），
+# 导致 cmd/hub 下的新文件被 git add -A 静默跳过。
+/hub
+
+# ===== swaggo 生成的 API 文档：**刻意不忽略，必须入库** =====
+# docs/{docs.go,swagger.json,swagger.yaml} 虽由 `swag init` 生成，但 docs.go 是
+# **编译必需输入**（cmd/hub/main.go 空白导入该包注册 swagger spec / `/swagger/*any`）。
+# 生成物分岔规则：**编译/打包必需 → 入库**（同 runner 的 controller-gen 产物，kubebuilder 惯例）；
+# 纯运行/本地便利产物（bin/ output/ .run/ 等）才忽略 + 可 clean。
+# 曾于 2026-09-09 被误列入忽略 → 导致新克隆/CI/release/go build 全挂（见
+# software-distribution-platform-docs/BUILD-ARTIFACTS.md F-1 与附 C）。
+# 再生成命令见 README「swaggo API 文档」一节。
 
 # ===== 本地环境变量（含密钥，勿提交） =====
 .env

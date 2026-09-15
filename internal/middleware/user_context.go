@@ -14,6 +14,11 @@ import (
 // ID; handlers read it via CurrentUserID(c).
 const contextKeyUserID = "auth.userID"
 
+// contextKeyGroups is where UserContext stashes the resolved Keycloak group
+// memberships (empty in dev mode / when the token carries no groups); the RBAC
+// middleware reads them via CurrentGroups(c) to apply §7 group inheritance.
+const contextKeyGroups = "auth.groups"
+
 // UserContext must run after Authenticator.Middleware(). It resolves the
 // verified Keycloak identity to a local users row, auto-provisioning one
 // on first login (see UserService.GetOrProvisionByKeycloakID) so nobody
@@ -46,6 +51,7 @@ func UserContext(userSvc *service.UserService) gin.HandlerFunc {
 		}
 
 		c.Set(contextKeyUserID, user.ID)
+		c.Set(contextKeyGroups, claims.Groups)
 		c.Next()
 	}
 }
@@ -59,4 +65,18 @@ func CurrentUserID(c *gin.Context) (uuid.UUID, bool) {
 	}
 	id, ok := raw.(uuid.UUID)
 	return id, ok
+}
+
+// CurrentGroups reads the Keycloak group memberships set by UserContext.
+// Returns nil in dev mode or when the token carries no groups.
+func CurrentGroups(c *gin.Context) []string {
+	raw, exists := c.Get(contextKeyGroups)
+	if !exists {
+		return nil
+	}
+	groups, ok := raw.([]string)
+	if !ok {
+		return nil
+	}
+	return groups
 }

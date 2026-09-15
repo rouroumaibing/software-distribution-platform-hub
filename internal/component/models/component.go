@@ -18,6 +18,12 @@ type Component struct {
 	RepoSecretRef string    `gorm:"size:128" json:"repoSecretRef,omitempty"`
 	Language      string    `gorm:"size:64" json:"language"`
 	Description   string    `json:"description"`
+
+	// Ownership (DATA-MODEL §7.4): drives the default approver for
+	// pipeline approvals. Exactly one of OwnerUser / OwnerGroup is set.
+	// Nullable so existing rows migrate cleanly; set on component create.
+	OwnerUser  *uuid.UUID `gorm:"type:uuid;index" json:"ownerUser,omitempty"`
+	OwnerGroup *string    `gorm:"size:128;index" json:"ownerGroup,omitempty"`
 }
 
 func (Component) TableName() string { return "components" }

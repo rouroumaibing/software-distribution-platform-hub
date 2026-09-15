@@ -105,6 +105,22 @@ type LogStore interface {
 	ListByRunTask(runID uuid.UUID, taskName string, p common.Pagination) ([]models.TaskRunLog, int64, error)
 }
 
+// PipelineApprovalStore is the persistence surface over pipeline_approvals
+// (DATA-MODEL §7.4). The hub records the audit trail + self-review gate here;
+// the runner still owns the DAG pause.
+type PipelineApprovalStore interface {
+	Create(*models.PipelineApproval) error
+	GetByRunAndTask(runID, taskRunID uuid.UUID) (*models.PipelineApproval, error)
+	Update(*models.PipelineApproval) error
+	ListByRun(runID uuid.UUID) ([]models.PipelineApproval, error)
+}
+
+// ComponentMetaStore resolves a pipeline's owning component + org, used to
+// denormalize org_id / component_id onto hub-side PipelineApproval rows.
+type ComponentMetaStore interface {
+	ResolveComponentOrg(pipelineID uuid.UUID) (componentID, orgID uuid.UUID, err error)
+}
+
 // PipelineRunService intentionally does NOT satisfy common.CRUDService —
 // a run isn't created from arbitrary user JSON (it's assembled server-side
 // from a Pipeline's current stages/tasks + target cluster), and Delete
@@ -119,6 +135,8 @@ type PipelineRunService struct {
 	dispatcher       Dispatcher
 	dispatchRepo     DispatchJobStore
 	logRepo          LogStore
+	approvalRepo     PipelineApprovalStore
+	componentMeta    ComponentMetaStore
 
 	// sweepInterval controls how often SweepPending retries failed dispatch
 	// jobs. Overridable in tests; defaults to 15s.
@@ -135,6 +153,8 @@ func NewPipelineRunService(
 	dispatcher Dispatcher,
 	dispatchRepo DispatchJobStore,
 	logRepo LogStore,
+	approvalRepo PipelineApprovalStore,
+	componentMeta ComponentMetaStore,
 ) *PipelineRunService {
 	return &PipelineRunService{
 		repo:             repo,
@@ -146,6 +166,8 @@ func NewPipelineRunService(
 		dispatcher:       dispatcher,
 		dispatchRepo:     dispatchRepo,
 		logRepo:          logRepo,
+		approvalRepo:     approvalRepo,
+		componentMeta:    componentMeta,
 		sweepInterval:    15 * time.Second,
 	}
 }
@@ -261,6 +283,40 @@ func (s *PipelineRunService) createRun(pipelineID, clusterID uuid.UUID, spec *ru
 		}
 	}
 
+	// Seed a Pending PipelineApproval row per Approval-type task so the hub
+	// owns the audit trail + self-review gate (§7.4). The runner still owns
+	// the DAG pause (it records status on TaskRun.Status.Approval). If the
+	// component/org can't be resolved we skip the hub record and fall back
+	// to broker-only gating rather than failing the trigger.
+	if s.approvalRepo != nil && s.componentMeta != nil {
+		componentID, orgID, merr := s.componentMeta.ResolveComponentOrg(run.PipelineID)
+		if merr != nil {
+			applog.Warnf("run: cannot resolve component/org for pipeline %s, skipping hub approval records: %v", run.PipelineID, merr)
+		} else {
+			for _, t := range spec.Tasks {
+				if t.Type != runnerapi.TaskTypeApproval {
+					continue
+				}
+				tr, terr := s.taskRepo.GetByRunAndTaskName(run.ID, t.Name)
+				if terr != nil {
+					applog.Warnf("run: cannot find task_run for approval %q: %v", t.Name, terr)
+					continue
+				}
+				pa := &models.PipelineApproval{
+					OrgID:       orgID,
+					RunID:       run.ID,
+					TaskRunID:   &tr.ID,
+					ComponentID: componentID,
+					Status:      "Pending",
+					RequestedBy: run.TriggeredBy,
+				}
+				if cerr := s.approvalRepo.Create(pa); cerr != nil {
+					applog.Warnf("run: failed to seed pipeline_approval for %q: %v", t.Name, cerr)
+				}
+			}
+		}
+	}
+
 	// Wrap the resolved spec in the dispatch envelope carrying the CR
 	// name/namespace the Runner must use, so the status it streams back
 	// routes to this exact run row (ApplyStatus looks up by CRName+cluster).
@@ -316,14 +372,13 @@ func (s *PipelineRunService) ApplyStatus(ctx context.Context, clusterID uuid.UUI
 	return nil
 }
 
-// Approve relays an approver's decision for a paused Approval-type task down
-// to the Runner owning the run's cluster. The Runner patches the TaskRun's
+// Approve records an approver's decision for a paused Approval-type task on
+// the hub side (§7.4 audit trail + self-review gate) and then relays it to
+// the Runner owning the run's cluster. The Runner patches the TaskRun's
 // Approval status (recording Approver / RejectedBy, advancing to Succeeded
 // once RequiredCount approvers sign off, or failing the run on a rejection);
 // the resulting phase change is then streamed back via MessageStatusUpdate
-// and persisted by ApplyStatus. The hub intentionally does not store approval
-// detail itself (task_runs has no approval columns) — it only brokers the
-// decision.
+// and persisted by ApplyStatus.
 func (s *PipelineRunService) Approve(ctx context.Context, pipelineID, runID uuid.UUID, taskName string, approved bool, approver string) error {
 	run, err := s.repo.GetByID(runID)
 	if err != nil {
@@ -344,6 +399,33 @@ func (s *PipelineRunService) Approve(ctx context.Context, pipelineID, runID uuid
 	}
 	if approver == "" {
 		return fmt.Errorf("approver identity is required")
+	}
+
+	// Hub-side state machine + self-review prevention (§7.4). When the
+	// approval record isn't available we still relay (broker-only fallback),
+	// but when it is we enforce Pending-only transitions and forbid the
+	// requester from approving their own run.
+	if s.approvalRepo != nil {
+		pa, perr := s.approvalRepo.GetByRunAndTask(runID, tr.ID)
+		if perr == nil && pa != nil {
+			if pa.Status != "Pending" {
+				return fmt.Errorf("approval for task %q already decided (status=%s)", taskName, pa.Status)
+			}
+			if pa.RequestedBy != "" && pa.RequestedBy == approver {
+				return fmt.Errorf("self-review prevented: requester %s cannot approve their own pipeline run", approver)
+			}
+			now := time.Now()
+			if approved {
+				pa.Status = "Approved"
+			} else {
+				pa.Status = "Rejected"
+			}
+			pa.Approver = approver
+			pa.DecidedAt = &now
+			if uerr := s.approvalRepo.Update(pa); uerr != nil {
+				return fmt.Errorf("failed to record approval decision: %w", uerr)
+			}
+		}
 	}
 
 	payload := &runnerapi.ApproveTaskPayload{

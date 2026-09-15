@@ -42,7 +42,7 @@ func RequirePermission(bindingSvc *service.BindingService, componentIDParam, per
 			return
 		}
 
-		allowed, err := bindingSvc.HasPermission(componentID, userID, permission)
+		allowed, err := bindingSvc.HasPermission(componentID, userID, CurrentGroups(c), permission)
 		if err != nil {
 			common.Fail(c, http.StatusForbidden, errForbidden)
 			c.Abort()

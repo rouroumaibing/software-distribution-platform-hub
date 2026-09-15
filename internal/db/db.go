@@ -86,8 +86,9 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&environmentmodels.Environment{},
 		&pipelinemodels.Pipeline{}, &pipelinemodels.PipelineStage{}, &pipelinemodels.PipelineTaskTemplate{}, &pipelinemodels.PipelineVersion{},
 		&artifactmodels.Artifact{},
-		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{},
+		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{}, &runmodels.PipelineApproval{},
 		&permmodels.Role{}, &permmodels.ComponentRoleBinding{}, &permmodels.User{},
+		&permmodels.PlatformRole{}, &permmodels.PlatformRoleBinding{}, &permmodels.ComponentRole{},
 	); err != nil {
 		return nil, err
 	}

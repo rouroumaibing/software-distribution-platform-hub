@@ -31,6 +31,10 @@ type keycloakClaims struct {
 	PreferredUsername string `json:"preferred_username"`
 	Email             string `json:"email"`
 	EmailVerified     bool   `json:"email_verified"`
+	// Groups carries the Keycloak group memberships (configured via a groups
+	// claim mapper). Consumed by §7 group-based RBAC inheritance so a single
+	// group binding grants every member the role's actions.
+	Groups []string `json:"groups"`
 	// AuthorizedParty is the client ID the token was issued for. Used
 	// instead of the standard "aud" check below.
 	AuthorizedParty string `json:"azp"`

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
@@ -17,4 +18,10 @@ func (r *RoleRepository) List() ([]models.Role, error) {
 	var roles []models.Role
 	err := r.DB.Find(&roles).Error
 	return roles, err
+}
+
+func (r *RoleRepository) GetByID(id uuid.UUID) (*models.Role, error) {
+	var role models.Role
+	err := r.DB.First(&role, id).Error
+	return &role, err
 }

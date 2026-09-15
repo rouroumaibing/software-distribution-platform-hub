@@ -1,0 +1,398 @@
+basePath: /api/v1
+definitions:
+  common.Envelope:
+    properties:
+      data: {}
+      error:
+        type: string
+      errorCode:
+        type: string
+    type: object
+  handler.ApprovalDecisionRequest:
+    properties:
+      approved:
+        description: Approved is true to sign off, false to reject.
+        type: boolean
+      approver:
+        description: |-
+          Approver optionally overrides the identity recorded on the Runner;
+          defaults to the authenticated user (or the dev user in dev mode).
+        type: string
+      reason:
+        description: Reason is free text for the audit trail (stored by the Runner).
+        type: string
+    type: object
+  handler.RolloutControlRequest:
+    properties:
+      action:
+        description: Action is one of pause | promote | rollback.
+        type: string
+      operator:
+        description: |-
+          Operator optionally overrides the identity recorded on the Runner;
+          defaults to the authenticated user (or the dev user in dev mode).
+        type: string
+    type: object
+  models.TriggerRequest:
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: Platform Team
+  description: 'Control plane API for the K8s software distribution platform: orgs,
+    catalogs, components, pipelines, runs, clusters and permissions, plus a Runner
+    WebSocket gateway.'
+  termsOfService: http://swagger.io/terms/
+  title: Software Distribution Platform Hub API
+  version: "1.0"
+paths:
+  /pipelines/{pipelineId}/runs:
+    get:
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: pipelineId
+        required: true
+        type: string
+      - description: page (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: page size (default 20, max 100)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: List pipeline runs for a pipeline
+      tags:
+      - runs
+    post:
+      consumes:
+      - application/json
+      description: Assembles a PipelineRunSpec from the pipeline's current stages/tasks
+        and dispatches it to a cluster Runner. Set targetClusters to fan the same
+        trigger out to multiple environments (one independent run per cluster); ignored
+        when clusterId is set.
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: pipelineId
+        required: true
+        type: string
+      - description: Trigger request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/models.TriggerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Trigger a pipeline run
+      tags:
+      - runs
+  /pipelines/{pipelineId}/runs/{runId}/tasks/{taskName}/decision:
+    post:
+      consumes:
+      - application/json
+      description: Relays an approver's decision to the Runner via the gateway. Approver
+        defaults to the current user.
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: pipelineId
+        required: true
+        type: string
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: runId
+        required: true
+        type: string
+      - description: Task name awaiting approval
+        in: path
+        name: taskName
+        required: true
+        type: string
+      - description: Approval decision
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.ApprovalDecisionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Submit an approval decision for a paused Approval task
+      tags:
+      - runs
+  /runs:
+    get:
+      parameters:
+      - description: filter by phase, e.g. Failed / Running / Succeeded
+        in: query
+        name: phase
+        type: string
+      - description: page (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: page size (default 20, max 100)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: List pipeline runs across all pipelines (Run Center)
+      tags:
+      - runs
+  /runs/{id}:
+    get:
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Get a pipeline run by ID
+      tags:
+      - runs
+  /runs/{id}/progress:
+    get:
+      description: Lightweight status endpoint for high-frequency console polling;
+        returns the run phase and per-task status rows, not the full pipeline definition.
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Get a pipeline run's live progress (phase + per-task status)
+      tags:
+      - runs
+  /runs/{id}/redispatch:
+    post:
+      description: Re-enqueues a fresh dispatch job carrying the last payload for
+        a run whose delivery is stuck (failed/dead) or unconfirmed. Succeeds even
+        if the Runner is offline; the job is delivered on reconnect or by the sweeper.
+        A run stuck in Failed is reset to Pending.
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Re-deliver a pipeline run's spec to its cluster
+      tags:
+      - runs
+  /runs/{id}/tasks:
+    get:
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: List tasks of a pipeline run
+      tags:
+      - runs
+  /runs/{id}/tasks/{name}/log:
+    get:
+      description: Returns the ordered log chunks the hub persisted as a Runner streamed
+        them over MessageLogChunk. Use the :name path param for a specific DAG task,
+        or the /runs/:id/log variant for run-level output. Chunks are served in emission
+        order.
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Task name; the run-level log uses the bucket __run__
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: page (default 1)
+        in: query
+        name: page
+        type: integer
+      - description: page size (default 20, max 100)
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Get a task's (or run-level) streamed logs for a pipeline run
+      tags:
+      - runs
+  /runs/{id}/tasks/{name}/rollout:
+    post:
+      consumes:
+      - application/json
+      description: Relays the operator command to the Runner via the gateway; the
+        resulting phase change streams back via status updates.
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Release task name
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Rollout control command
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.RolloutControlRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/common.Envelope'
+      summary: Send a pause/promote/rollback command to a Release task's Rollout
+      tags:
+      - runs
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

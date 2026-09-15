@@ -101,14 +101,17 @@ func main() {
 	userRepo := permbrepo.NewUserRepository(gdb)
 	roleRepo := permbrepo.NewRoleRepository(gdb)
 	bindingRepo := permbrepo.NewBindingRepository(gdb)
+	componentRoleRepo := permbrepo.NewComponentRoleRepository(gdb)
+	platformRoleRepo := permbrepo.NewPlatformRoleRepository(gdb)
+	platformBindRepo := permbrepo.NewPlatformRoleBindingRepository(gdb)
 
 	// --- services -----------------------------------------------------------
 	userSvc := permissionsvc.NewUserService(userRepo)
 	roleSvc := permissionsvc.NewRoleService(roleRepo)
-	bindingSvc := permissionsvc.NewBindingService(bindingRepo, roleRepo)
+	bindingSvc := permissionsvc.NewBindingService(bindingRepo, roleRepo, componentRoleRepo, platformRoleRepo, platformBindRepo, componentRepo)
 	orgSvc := orgsvc.NewOrgService(orgRepo, serviceTreeRepo)
 	catalogSvc := catalogsvc.NewServiceService(catalogRepo)
-	componentSvc := componentsvc.NewComponentService(componentRepo)
+	componentSvc := componentsvc.NewComponentService(componentRepo, bindingRepo, componentRoleRepo)
 	componentConfigSvc := componentsvc.NewComponentConfigService(componentConfigRepo)
 	clusterSvc := clustersvc.NewClusterService(clusterRepo)
 	envSvc := envsvc.NewEnvironmentService(envRepo)
@@ -167,7 +170,11 @@ func main() {
 	// run service needs the gateway to dispatch work; the gateway calls back
 	// into the run service when Runner status arrives. Wired here to avoid a
 	// package cycle (run defines a Dispatcher interface, gateway implements it).
-	runSvc := runsvc.NewPipelineRunService(pipelineRunRepo, taskRunRepo, pipelineRepo, stageRepo, taskTemplateRepo, clusterSvc, gw, dispatchJobRepo, taskRunLogRepo)
+	approvalRepo := runrepo.NewPipelineApprovalRepository(gdb)
+	// componentMetaResolver lets the run service denormalize org_id /
+	// component_id onto hub-side PipelineApproval rows (DATA-MODEL §7.4).
+	componentMeta := &componentMetaResolver{pipelineRepo: pipelineRepo, componentRepo: componentRepo}
+	runSvc := runsvc.NewPipelineRunService(pipelineRunRepo, taskRunRepo, pipelineRepo, stageRepo, taskTemplateRepo, clusterSvc, gw, dispatchJobRepo, taskRunLogRepo, approvalRepo, componentMeta)
 	gw.SetStatusHandler(func(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.StatusUpdatePayload) {
 		_ = runSvc.ApplyStatus(ctx, clusterID, payload)
 	})
@@ -211,7 +218,7 @@ func main() {
 	artifactHandler := artifacthandler.NewArtifactHandler(artifactSvc)
 	userHandler := permhandler.NewUserHandler(userSvc)
 	roleHandler := permhandler.NewRoleHandler(roleSvc)
-	bindingHandler := permhandler.NewBindingHandler(bindingSvc)
+	componentRoleHandler := permhandler.NewComponentRoleHandler(componentRoleRepo)
 	pipelineRunHandler := runhandler.NewPipelineRunHandler(runSvc)
 
 	// --- auth (optional) ----------------------------------------------------
@@ -252,6 +259,8 @@ func main() {
 	artifactHandler.RegisterRoutes(api)
 	userHandler.RegisterRoutes(api)
 	roleHandler.RegisterRoutes(api)
+	componentRoleHandler.RegisterRoutes(api)
+	bindingHandler := permhandler.NewBindingHandler(bindingSvc, componentRepo)
 	bindingHandler.RegisterRoutes(api)
 
 	// Component-scoped routes get a RequirePermission wrapper, but only when
@@ -263,8 +272,8 @@ func main() {
 		return []gin.HandlerFunc{middleware.RequirePermission(bindingSvc, param, perm), h}
 	}
 	scoped := api.Group("/")
-	scoped.POST("/pipelines/:id/runs", wrap(permmodels.PermissionEdit, "id", pipelineRunHandler.Trigger)...)
-	scoped.GET("/pipelines/:id/runs", wrap(permmodels.PermissionView, "id", pipelineRunHandler.ListByPipeline)...)
+	scoped.POST("/pipelines/:id/runs", wrap(permmodels.ActionPipelineTrigger, "id", pipelineRunHandler.Trigger)...)
+	scoped.GET("/pipelines/:id/runs", wrap(permmodels.ActionComponentRead, "id", pipelineRunHandler.ListByPipeline)...)
 	// 全局运行列表（运行中心）：跨 pipeline 巡视，支持 ?phase= 过滤。
 	scoped.GET("/runs", pipelineRunHandler.ListAll)
 	scoped.GET("/runs/:id", pipelineRunHandler.Get)
@@ -272,10 +281,10 @@ func main() {
 	scoped.GET("/runs/:id/progress", pipelineRunHandler.Progress)
 	scoped.GET("/runs/:id/log", pipelineRunHandler.GetLogs)
 	scoped.GET("/runs/:id/tasks/:name/log", pipelineRunHandler.GetLogs)
-	scoped.POST("/pipelines/:id/runs/:runId/tasks/:taskName/decision", wrap(permmodels.PermissionEdit, "id", pipelineRunHandler.Approve)...)
+	scoped.POST("/pipelines/:id/runs/:runId/tasks/:taskName/decision", wrap(permmodels.ActionApprovalApprove, "id", pipelineRunHandler.Approve)...)
 	scoped.POST("/runs/:id/tasks/:name/rollout", pipelineRunHandler.ControlRollout)
 	// 重派发：把卡在 Pending 的 run 重新投递给当前在线的 runner。
-	scoped.POST("/runs/:id/redispatch", wrap(permmodels.PermissionEdit, "id", pipelineRunHandler.Redispatch)...)
+	scoped.POST("/runs/:id/redispatch", wrap(permmodels.ActionPipelineTrigger, "id", pipelineRunHandler.Redispatch)...)
 
 	// Runner gateway WebSocket endpoint.
 	r.GET(cfg.GatewayPath, gw.ServeWS)
@@ -343,4 +352,24 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// componentMetaResolver implements runsvc.ComponentMetaStore: it maps a
+// pipeline to its owning component + org so the run service can denormalize
+// org_id / component_id onto hub-side PipelineApproval rows (DATA-MODEL §7.4).
+type componentMetaResolver struct {
+	pipelineRepo  runsvc.PipelineDefStore
+	componentRepo *componentrepo.ComponentRepository
+}
+
+func (r *componentMetaResolver) ResolveComponentOrg(pipelineID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
+	p, err := r.pipelineRepo.GetByID(pipelineID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	orgID, err := r.componentRepo.GetOrgID(p.ComponentID)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	return p.ComponentID, orgID, nil
 }
