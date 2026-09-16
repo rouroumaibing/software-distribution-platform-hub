@@ -4,6 +4,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+
 	// Reuse the runner's CRD enum types so a template's Type can be copied
 	// straight into runnerapi.PipelineTaskSpec.Type at trigger time.
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
@@ -11,8 +13,15 @@ import (
 
 // PipelineTaskTemplate is the definition-level counterpart of
 // runnerapi.PipelineTaskSpec.
+//
+// It embeds common.BaseNoSoftDelete so id / created_at / updated_at are all
+// mapped. Before this, the struct carried its own ID only, so the two
+// timestamp columns existed in the table (0001_init_schema.sql) but were
+// invisible to the API. BaseNoSoftDelete (not Base) because stages/templates
+// have no deleted_at column — they are hard-deleted, unlike their soft-deleted
+// parent pipeline.
 type PipelineTaskTemplate struct {
-	ID      uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	common.BaseNoSoftDelete
 	StageID uuid.UUID `gorm:"type:uuid;not null;index" json:"stageId"`
 
 	Name         string                     `gorm:"size:128;not null" json:"name"`

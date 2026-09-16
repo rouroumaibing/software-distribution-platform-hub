@@ -13,15 +13,28 @@ import (
 
 type TaskTemplateService struct {
 	repo *repository.TaskTemplateRepository
+	// stages 提供 EnsureStageExists：任务模板挂在 stage 上，stage 又挂在
+	// pipeline 上，所以新建/列举之前要确认整条父链都还在（见 stage.go）。
+	stages *StageService
 }
 
-func NewTaskTemplateService(repo *repository.TaskTemplateRepository) *TaskTemplateService {
-	return &TaskTemplateService{repo: repo}
+func NewTaskTemplateService(repo *repository.TaskTemplateRepository, stages *StageService) *TaskTemplateService {
+	return &TaskTemplateService{repo: repo, stages: stages}
 }
 
-func (s *TaskTemplateService) Create(t *models.PipelineTaskTemplate) error { return s.repo.Create(t) }
+// Create 先校验父链存活：否则对一个不存在的 stageId 会撞 FK 报错塌成 500，
+// 对已软删 pipeline 下的 stage 则会造出新的孤儿行。
+func (s *TaskTemplateService) Create(t *models.PipelineTaskTemplate) error {
+	if err := s.stages.EnsureStageExists(t.StageID); err != nil {
+		return err
+	}
+	return s.repo.Create(t)
+}
 
 func (s *TaskTemplateService) ListByStage(stageID uuid.UUID) ([]models.PipelineTaskTemplate, error) {
+	if err := s.stages.EnsureStageExists(stageID); err != nil {
+		return nil, err
+	}
 	return s.repo.ListByStageID(stageID)
 }
 
@@ -62,4 +75,6 @@ func (s *TaskTemplateService) Update(id uuid.UUID, t *models.PipelineTaskTemplat
 	return s.repo.Update(t)
 }
 
+// Delete 同 stage.Delete：不加父存在性校验，保证已软删 pipeline 下残留的任务
+// 模板仍能通过 API 清掉。
 func (s *TaskTemplateService) Delete(id uuid.UUID) error { return s.repo.Delete(id) }

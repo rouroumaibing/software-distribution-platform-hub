@@ -41,6 +41,20 @@ func (s *PipelineService) ListByComponent(componentID uuid.UUID, p common.Pagina
 	return s.repo.FindByComponentID(componentID, p)
 }
 
+// PipelineListOpts carries the optional filters for the global pipeline list.
+// An empty value on any field means "no filter on this dimension".
+type PipelineListOpts struct {
+	ComponentID uuid.UUID
+	Kind        string
+	Name        string
+}
+
+// List returns the cross-component pipeline list (global /pipelines endpoint),
+// supporting the filters the console's run center and future ⌘K search need.
+func (s *PipelineService) List(opts PipelineListOpts, p common.Pagination) ([]models.Pipeline, int64, error) {
+	return s.repo.FindAll(opts.ComponentID, opts.Kind, opts.Name, p)
+}
+
 // Update bumps Version and copies only the editable scalar fields onto the
 // existing row, preserving immutable identity (ID), audit (CreatedAt,
 // CreatedBy) and the owning ComponentID. Any structural edit (stages/tasks

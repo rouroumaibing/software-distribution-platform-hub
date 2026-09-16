@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,7 @@ func NewPipelineHandler(svc *service.PipelineService) *PipelineHandler {
 // RegisterRoutes exposes the pipeline CRUD surface consumed by the console's
 // createCrud('/pipelines'):
 //   - POST   /pipelines              create
+//   - GET    /pipelines              global list (P0-2)
 //   - GET    /pipelines/:id          get
 //   - PUT    /pipelines/:id          update
 //   - DELETE /pipelines/:id          delete
@@ -31,6 +33,7 @@ func NewPipelineHandler(svc *service.PipelineService) *PipelineHandler {
 // path contract stays explicit.
 func (h *PipelineHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/pipelines", h.Create)
+	rg.GET("/pipelines", h.List)
 	rg.GET("/pipelines/:id", h.Get)
 	rg.PUT("/pipelines/:id", h.Update)
 	rg.DELETE("/pipelines/:id", h.Delete)
@@ -102,6 +105,34 @@ func (h *PipelineHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// List serves the global /pipelines endpoint (cross-component), the backend
+// replacement for the console's browser-side aggregation in useResourceMap.ts.
+// Filters: componentId (uuid), kind (build/release/custom), name (substring).
+// Pagination via ?page=&pageSize= (parsed by common.ParsePagination).
+func (h *PipelineHandler) List(c *gin.Context) {
+	var componentID uuid.UUID
+	if v := c.Query("componentId"); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			common.Fail(c, http.StatusBadRequest, fmt.Errorf("invalid componentId: %q", v))
+			return
+		}
+		componentID = id
+	}
+	opts := service.PipelineListOpts{
+		ComponentID: componentID,
+		Kind:        c.Query("kind"),
+		Name:        c.Query("name"),
+	}
+	p := common.ParsePagination(c)
+	items, total, err := h.svc.List(opts, p)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OKPaged(c, items, total, p)
 }
 
 func (h *PipelineHandler) ListByComponent(c *gin.Context) {

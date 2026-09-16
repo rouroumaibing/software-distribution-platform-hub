@@ -98,6 +98,7 @@ func main() {
 	taskRunRepo := runrepo.NewTaskRunRepository(gdb)
 	taskRunLogRepo := runrepo.NewTaskRunLogRepository(gdb)
 	dispatchJobRepo := runrepo.NewDispatchJobRepository(gdb)
+	rolloutRunRepo := runrepo.NewRolloutRunRepository(gdb)
 	userRepo := permbrepo.NewUserRepository(gdb)
 	roleRepo := permbrepo.NewRoleRepository(gdb)
 	bindingRepo := permbrepo.NewBindingRepository(gdb)
@@ -116,8 +117,10 @@ func main() {
 	clusterSvc := clustersvc.NewClusterService(clusterRepo)
 	envSvc := envsvc.NewEnvironmentService(envRepo)
 	pipelineSvc := pipelinesvc.NewPipelineService(pipelineRepo, versionRepo, pipelineRunRepo)
-	stageSvc := pipelinesvc.NewStageService(stageRepo)
-	taskTemplateSvc := pipelinesvc.NewTaskTemplateService(taskTemplateRepo)
+	// stageSvc 拿 pipelineRepo 做父存在性校验；taskTemplateSvc 复用 stageSvc，
+	// 因为任务模板的父链是 task → stage → pipeline（见 service/stage.go）。
+	stageSvc := pipelinesvc.NewStageService(stageRepo, pipelineRepo)
+	taskTemplateSvc := pipelinesvc.NewTaskTemplateService(taskTemplateRepo, stageSvc)
 
 	// --- artifact object storage (G5) ----------------------------------------
 	// Driver comes from ARTIFACT_STORE_DRIVER: s3 (MinIO/S3/OSS) or local
@@ -220,6 +223,8 @@ func main() {
 	roleHandler := permhandler.NewRoleHandler(roleSvc)
 	componentRoleHandler := permhandler.NewComponentRoleHandler(componentRoleRepo)
 	pipelineRunHandler := runhandler.NewPipelineRunHandler(runSvc)
+	releaseSvc := runsvc.NewReleaseService(rolloutRunRepo)
+	releaseHandler := runhandler.NewReleaseHandler(releaseSvc)
 
 	// --- auth (optional) ----------------------------------------------------
 	var auth *middleware.Authenticator
@@ -257,6 +262,7 @@ func main() {
 	stageHandler.RegisterRoutes(api)
 	taskTemplateHandler.RegisterRoutes(api)
 	artifactHandler.RegisterRoutes(api)
+	releaseHandler.RegisterRoutes(api)
 	userHandler.RegisterRoutes(api)
 	roleHandler.RegisterRoutes(api)
 	componentRoleHandler.RegisterRoutes(api)

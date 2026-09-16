@@ -113,9 +113,13 @@ create table pipelines (
     created_by    varchar(128),
     created_at    timestamptz  not null default now(),
     updated_at    timestamptz  not null default now(),
-    deleted_at    timestamptz,
-    unique (component_id, name)
+    deleted_at    timestamptz
 );
+-- 唯一性只作用于未软删的行:流水线是软删的,若约束不含 deleted_at,删掉一条后同名
+-- 流水线永远建不回来(唯一键冲突 → 500)。GORM 侧同义声明见
+-- internal/pipeline/models/pipeline.go 的 uniqueIndex 标签。
+create unique index idx_pipelines_component_name_active
+    on pipelines(component_id, name) where deleted_at is null;
 create index idx_pipelines_component on pipelines(component_id) where deleted_at is null;
 
 -- ---------------------------------------------------------------------

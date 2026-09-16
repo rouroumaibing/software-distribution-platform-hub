@@ -19,7 +19,7 @@ INSERT INTO pipeline_stages (id, pipeline_id, name, sequence, created_at, update
 ('d2000000-0000-0000-0000-000000000002', 'd1000000-0000-0000-0000-000000000001', '构建', 2, now() - interval '70 days', now() - interval '6 days')
 ON CONFLICT (id) DO NOTHING;
 
--- 注意: pipeline_task_templates 无 created_at/updated_at 列(模型未含时间戳)
+-- 注: pipeline_task_templates 的 created_at/updated_at 取 DDL 默认值 now()，此处不再显式赋值
 INSERT INTO pipeline_task_templates (id, stage_id, name, type, display_order, image, script_path, script_args, command, args, produces, consumes, retry_policy, timeout_seconds) VALUES
 ('d3000000-0000-0000-0000-000000000001', 'd2000000-0000-0000-0000-000000000001', '单元测试', 'Build', 1,
  'golang:1.22', 'build.sh', '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,

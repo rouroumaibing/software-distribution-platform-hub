@@ -11,6 +11,8 @@ import (
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/service"
 )
 
+// TaskTemplateHandler 的错误同样走 common.AbortWithError（原因见 stage.go）：
+// stage 不存在或父 pipeline 已软删时返回 404，而不是把 FK 报错塌成 500。
 type TaskTemplateHandler struct{ svc *service.TaskTemplateService }
 
 func NewTaskTemplateHandler(svc *service.TaskTemplateService) *TaskTemplateHandler {
@@ -27,17 +29,17 @@ func (h *TaskTemplateHandler) RegisterRoutes(rg *gin.RouterGroup) {
 func (h *TaskTemplateHandler) Create(c *gin.Context) {
 	stageID, err := uuid.Parse(c.Param("stageId"))
 	if err != nil {
-		common.Fail(c, http.StatusBadRequest, err)
+		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
 	}
 	var in models.PipelineTaskTemplate
 	if err := c.ShouldBindJSON(&in); err != nil {
-		common.Fail(c, http.StatusBadRequest, err)
+		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
 	}
 	in.StageID = stageID
 	if err := h.svc.Create(&in); err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		common.AbortWithError(c, err)
 		return
 	}
 	common.Created(c, in)
@@ -46,12 +48,12 @@ func (h *TaskTemplateHandler) Create(c *gin.Context) {
 func (h *TaskTemplateHandler) List(c *gin.Context) {
 	stageID, err := uuid.Parse(c.Param("stageId"))
 	if err != nil {
-		common.Fail(c, http.StatusBadRequest, err)
+		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
 	}
 	items, err := h.svc.ListByStage(stageID)
 	if err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		common.AbortWithError(c, err)
 		return
 	}
 	common.OK(c, items)
@@ -60,16 +62,16 @@ func (h *TaskTemplateHandler) List(c *gin.Context) {
 func (h *TaskTemplateHandler) Update(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		common.Fail(c, http.StatusBadRequest, err)
+		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
 	}
 	var in models.PipelineTaskTemplate
 	if err := c.ShouldBindJSON(&in); err != nil {
-		common.Fail(c, http.StatusBadRequest, err)
+		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
 	}
 	if err := h.svc.Update(id, &in); err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		common.AbortWithError(c, err)
 		return
 	}
 	common.OK(c, in)
@@ -78,11 +80,11 @@ func (h *TaskTemplateHandler) Update(c *gin.Context) {
 func (h *TaskTemplateHandler) Delete(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		common.Fail(c, http.StatusBadRequest, err)
+		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
 	}
 	if err := h.svc.Delete(id); err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		common.AbortWithError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
