@@ -11,7 +11,7 @@ import (
 
 // DispatchJobRepository is the durable store behind the dispatch queue. It
 // tracks every attempt to deliver a PipelineRun spec to a Runner, so delivery
-// survives a temporarily-offline cluster and is retried on reconnect / backoff.
+// survives a temporarily-offline target and is retried on reconnect / backoff.
 type DispatchJobRepository struct{ DB *gorm.DB }
 
 func NewDispatchJobRepository(db *gorm.DB) *DispatchJobRepository {
@@ -30,12 +30,12 @@ func (r *DispatchJobRepository) GetByID(id uuid.UUID) (*models.DispatchJob, erro
 	return &j, nil
 }
 
-// ListPendingByCluster returns jobs still needing delivery for a cluster
+// ListPendingByTarget returns jobs still needing delivery for a target
 // (pending or failed-but-due), ordered oldest-first, for redelivery when a
 // Runner (re)connects.
-func (r *DispatchJobRepository) ListPendingByCluster(clusterID uuid.UUID) ([]models.DispatchJob, error) {
+func (r *DispatchJobRepository) ListPendingByTarget(targetID uuid.UUID) ([]models.DispatchJob, error) {
 	var jobs []models.DispatchJob
-	err := r.DB.Where("cluster_id = ? AND state IN (?, ?)", clusterID, models.DispatchJobPending, models.DispatchJobFailed).
+	err := r.DB.Where("target_id = ? AND state IN (?, ?)", targetID, models.DispatchJobPending, models.DispatchJobFailed).
 		Order("created_at asc").Find(&jobs).Error
 	return jobs, err
 }

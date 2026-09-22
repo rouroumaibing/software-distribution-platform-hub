@@ -8,19 +8,19 @@ import (
 
 // TriggerRequest is the JSON body of POST /pipelines/:pipelineId/runs. It
 // carries the trigger-time inputs that aren't derivable from the pipeline
-// definition itself: which cluster(s) to run on, the git source/ref to check
+// definition itself: which target(s) to run on, the git source/ref to check
 // out, pipeline params, and who triggered it.
 type TriggerRequest struct {
-	// ClusterID overrides cluster selection. If nil/empty, the hub picks the
-	// first online cluster. Ignored when TargetClusters is set.
-	ClusterID *uuid.UUID `json:"clusterId,omitempty"`
+	// TargetID overrides target selection. If nil/empty, the hub picks the
+	// first online target. Ignored when TargetIDs is set.
+	TargetID *uuid.UUID `json:"targetId,omitempty"`
 
-	// TargetClusters fans the trigger out to multiple environments: one
-	// independent PipelineRun is created per listed cluster (each keeps the
-	// 1:1 run↔cluster invariant). Targets only need to EXIST, not be online —
-	// the durable dispatch queue delivers each run once its Runner reconnects.
-	// When set, ClusterID is ignored.
-	TargetClusters []uuid.UUID `json:"targetClusters,omitempty"`
+	// TargetIDs fans the trigger out to multiple environments: one independent
+	// PipelineRun is created per listed target (each keeps the 1:1 run↔target
+	// invariant). Targets only need to EXIST, not be online — the durable
+	// dispatch queue delivers each run once its Runner reconnects.
+	// When set, TargetID is ignored.
+	TargetIDs []uuid.UUID `json:"targetIds,omitempty"`
 
 	// TargetNamespace is the K8s namespace the runner creates Jobs in.
 	// Defaults to "sdp-run" when empty.

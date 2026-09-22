@@ -32,17 +32,17 @@ const (
 	ActionPipelineCreate   = "pipeline:create"
 	ActionPipelineUpdate   = "pipeline:update"
 	ActionPipelineDelete   = "pipeline:delete"
-	ActionApprovalApprove = "approval:approve"
-	ActionConfigRead      = "config:read"
-	ActionConfigUpdate    = "config:update"
-	ActionArtifactRead    = "artifact:read"
+	ActionApprovalApprove  = "approval:approve"
+	ActionConfigRead       = "config:read"
+	ActionConfigUpdate     = "config:update"
+	ActionArtifactRead     = "artifact:read"
 	ActionArtifactDownload = "artifact:download"
 
-	ActionPageOverviewView = "page:overview:view"
+	ActionPageOverviewView    = "page:overview:view"
 	ActionPageServicetreeView = "page:servicetree:view"
-	ActionPageSettingsView = "page:settings:view"
-	ActionOrgManage        = "org:manage"
-	ActionUserManage       = "user:manage"
+	ActionPageSettingsView    = "page:settings:view"
+	ActionOrgManage           = "org:manage"
+	ActionUserManage          = "user:manage"
 )
 
 // Role is either a system-wide built-in (OrgID == nil: Viewer/Editor/Admin)

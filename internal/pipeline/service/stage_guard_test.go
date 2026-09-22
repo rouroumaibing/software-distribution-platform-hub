@@ -40,6 +40,12 @@ func newFakeStageStore() *fakeStageStore {
 }
 
 func (f *fakeStageStore) Create(s *models.PipelineStage) error {
+	// GORM 的 `default:gen_random_uuid()` 会在插入后把主键回填到实体上；fake 必须
+	// 复制这一点，否则 `Create` 之后再拿 s.ID（回滚时的重建流程就是这么用的）
+	// 会一直是零值，而真实行为不是。
+	if s.ID == uuid.Nil {
+		s.ID = uuid.New()
+	}
 	f.created = append(f.created, *s)
 	f.rows[s.ID] = *s
 	return nil
@@ -74,7 +80,8 @@ func newGuardFixture(livePipelines ...uuid.UUID) (*StageService, *fakeStageStore
 		parent.live[id] = models.Pipeline{}
 	}
 	store := newFakeStageStore()
-	return NewStageService(store, parent), store
+	// templates 传 nil：本组用例只测父存在性校验，不涉及软删级联。
+	return NewStageService(store, parent, nil), store
 }
 
 func assertNotFound(t *testing.T, err error, wantErrorCode, what string) {
@@ -182,7 +189,7 @@ func TestStageUpdateAndDelete_StayOpenOnDeletedPipeline(t *testing.T) {
 	svc, store := newGuardFixture() // 父 pipeline 已软删
 	id := uuid.New()
 	row := models.PipelineStage{PipelineID: uuid.New(), Name: "旧名", Sequence: 1}
-	row.ID = id // ID 是内嵌 BaseNoSoftDelete 的字段，不能出现在复合字面量里
+	row.ID = id // ID 是内嵌 common.Base 的提升字段，不能出现在复合字面量里
 	store.rows[id] = row
 
 	if _, err := svc.Update(id, &models.PipelineStage{Name: "新名", Sequence: 2}); err != nil {

@@ -36,6 +36,27 @@ type Client interface {
 	Delete(key string) error
 }
 
+// ObjectInfo is one object as seen in the store.
+type ObjectInfo struct {
+	Key  string
+	Size int64
+}
+
+// Enumerator is the **read-only listing** surface, used solely by the periodic
+// orphan reconciliation job (backlog B-16 对账).
+//
+// 刻意与 Client 分开（接口隔离）：
+//   - 下载 / 上传 / 删除是每请求热路径，驱动必须实现；列出整桶是低频运维动作，
+//     且成本随桶大小增长 —— 不该让每个 Client 实现都被迫背上它；
+//   - 更重要的是**不能假装支持**：某个驱动若无法列举，"对账结果 = 0 个孤儿"
+//     会与"根本查不了"混淆。调用方用类型断言判断，不支持时如实报告"跳过"。
+type Enumerator interface {
+	// ListObjects returns objects whose key starts with prefix ("", the
+	// default, means the whole store). Implementations must stop early once
+	// limit is reached and signal it, so a huge bucket cannot exhaust memory.
+	ListObjects(prefix string, limit int) (objects []ObjectInfo, truncated bool, err error)
+}
+
 // ValidateKey rejects keys that try to escape their prefix or abuse length.
 // All drivers share this rule so artifacts can switch drivers freely.
 func ValidateKey(key string) error {

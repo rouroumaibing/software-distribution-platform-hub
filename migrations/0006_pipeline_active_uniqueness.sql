@@ -1,7 +1,7 @@
 -- =====================================================================
 -- 0006_pipeline_active_uniqueness.sql — pipelines 的"活行唯一"约束
 -- 运行: 手动执行（与 0004/0005 同路径）。语句幂等，AutoMigrate 之后跑亦可。
---   kubectl -n sdp-system exec -i deploy/postgres -- \
+--   kubectl -n sdp-workflow exec -i deploy/postgres -- \
 --     psql -v ON_ERROR_STOP=1 -U sdp -d sdp < migrations/0006_pipeline_active_uniqueness.sql
 --
 -- 背景（backlog B-15 第 (b) 项）:

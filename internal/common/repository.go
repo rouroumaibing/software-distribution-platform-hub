@@ -52,3 +52,14 @@ func (r *Repository[T]) Delete(id uuid.UUID) error {
 	var entity T
 	return r.DB.Delete(&entity, "id = ?", id).Error
 }
+
+// ListWhere returns every entity matching a raw WHERE clause (e.g.
+// "status = ?", status). Use for simple single-clause lookups that don't need
+// the pagination/offset machinery of List.
+func (r *Repository[T]) ListWhere(where string, args ...any) ([]T, error) {
+	var entities []T
+	if err := r.DB.Where(where, args...).Find(&entities).Error; err != nil {
+		return nil, err
+	}
+	return entities, nil
+}

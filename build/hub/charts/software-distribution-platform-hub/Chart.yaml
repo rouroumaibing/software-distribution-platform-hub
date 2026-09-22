@@ -2,3 +2,13 @@ apiVersion: v2
 name: software-distribution-platform-hub
 description: software-distribution-platform-hub charts
 version: 0.0.1
+
+# Keycloak 子 chart：官方 codecentric/keycloakx（干净通用版，非华为 CCE fork）7.3.2 / appVersion 26.7.4，
+# 已 vendor 进本 chart 的 charts/keycloak 目录（固定版本，随 hub 一并安装，提供平台认证；console 本期仍 authDisabled）。
+# file:// 本地依赖，helm dependency build 会就地把 charts/keycloak 打包成 keycloak-7.3.2.tgz，不触发联网。
+# 值透传见 values.yaml 的 keycloak: 段（子 chart 作用域即 keycloak.*）。
+dependencies:
+  - name: keycloak
+    version: 7.3.2
+    # 本地 vendor（charts/keycloak 目录），file:// 不触发联网；helm dependency build 会就地打包成 tgz。
+    repository: "file://charts/keycloak"

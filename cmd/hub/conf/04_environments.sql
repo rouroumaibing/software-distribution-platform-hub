@@ -1,12 +1,12 @@
 -- ============================================================
--- 04_environments.sql — 组件环境(组件 x 集群 x namespace)
+-- 04_environments.sql — 组件环境(组件 x 目标 x namespace)
 -- 对应页面: 组件详情-环境
 -- 表: environments
 -- 前缀: c2=environments
 -- 命名约定: namespace = {org-slug}-{component-key}-{env-key}
 -- ============================================================
 
-INSERT INTO environments (id, component_id, key, name, cluster_id, env_type, namespace, created_at, updated_at) VALUES
+INSERT INTO environments (id, component_id, key, name, target_id, env_type, namespace, created_at, updated_at) VALUES
 -- order-service: dev / staging / prod 三套
 ('c2000000-0000-0000-0000-000000000001', 'b2000000-0000-0000-0000-000000000004', 'dev',     '开发环境', 'c1000000-0000-0000-0000-000000000001', 'test',       'platform-eng-order-service-dev',     now() - interval '70 days', now() - interval '5 days'),
 ('c2000000-0000-0000-0000-000000000002', 'b2000000-0000-0000-0000-000000000004', 'staging', '预发环境', 'c1000000-0000-0000-0000-000000000002', 'test',       'platform-eng-order-service-staging', now() - interval '70 days', now() - interval '5 days'),

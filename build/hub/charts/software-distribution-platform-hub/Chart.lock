@@ -1,0 +1,6 @@
+dependencies:
+- name: keycloak
+  repository: file://charts/keycloak
+  version: 7.3.2
+digest: sha256:0cd87c32e4e387ddcecf784869a32cb792d75524b53c705af97c2091790a12e5
+generated: "2026-09-21T20:19:40.210217+08:00"

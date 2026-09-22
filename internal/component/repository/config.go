@@ -47,3 +47,14 @@ func (r *ComponentConfigRepository) GetByKey(componentID uuid.UUID, key string, 
 func (r *ComponentConfigRepository) LogHistory(h *models.ComponentConfigHistory) error {
 	return r.DB.Create(h).Error
 }
+
+// CountByEnvironment returns how many config-override rows are scoped to an
+// environment, used by EnvironmentService.Delete to audit (not block) a delete
+// (DELETE-CONTRACT §6.4 #8).
+func (r *ComponentConfigRepository) CountByEnvironment(envID uuid.UUID) (int64, error) {
+	var n int64
+	if err := r.DB.Model(&models.ComponentConfig{}).Where("environment_id = ?", envID).Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}

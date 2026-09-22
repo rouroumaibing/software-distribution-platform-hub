@@ -2,6 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Values.basic.component }}-artifacts
+  namespace: {{ .Values.namespace }}
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:

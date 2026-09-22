@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
@@ -23,8 +25,24 @@ func (r *BindingRepository) Delete(id uuid.UUID) error {
 	return r.DB.Delete(&models.ComponentRoleBinding{}, "id = ?", id).Error
 }
 
-// GetByComponentAndUser is what middleware calls on every authenticated
-// request to check "does this user have any role on this component".
+// expiredScope narrows a query to rows whose expires_at is a past timestamp.
+// Shared by both binding tables' DeleteExpired and by the DryRun regression
+// test, so the predicate under test is exactly the one production emits.
+func expiredScope(q *gorm.DB, now time.Time) *gorm.DB {
+	return q.Where("expires_at IS NOT NULL AND expires_at < ?", now)
+}
+
+// DeleteExpired physically removes grants whose expires_at is in the past.
+// Authorization already ignores them (ListMatching filters on expiry), so this
+// is the periodic cleanup that keeps the table from growing without bound
+// (ACCOUNT-PERMISSION-MODEL §7.4).
+func (r *BindingRepository) DeleteExpired(now time.Time) (int64, error) {
+	res := expiredScope(r.DB, now).Delete(&models.ComponentRoleBinding{})
+	return res.RowsAffected, res.Error
+}
+
+// GetByComponentAndUser is what the legacy middleware path calls to check
+// "does this user have any role on this component". Kept for the V1 column.
 func (r *BindingRepository) GetByComponentAndUser(componentID, userID uuid.UUID) (*models.ComponentRoleBinding, error) {
 	var b models.ComponentRoleBinding
 	err := r.DB.Where("component_id = ? AND user_id = ?", componentID, userID).First(&b).Error
@@ -39,14 +57,27 @@ func (r *BindingRepository) GetByComponentAndUser(componentID, userID uuid.UUID)
 // legacy per-user bindings (user_id set, subject_type empty). Group
 // bindings are only included when the subject actually belongs to the group,
 // so an empty groups slice simply skips the group branch.
-func (r *BindingRepository) ListMatching(componentID uuid.UUID, userID uuid.UUID, groups []string) ([]models.ComponentRoleBinding, error) {
+//
+// The user branch matches on subject_id = subject (the Keycloak `sub`), per
+// ACCOUNT-PERMISSION-MODEL §5.3; the legacy branch (user_id = local uuid) is
+// retained for rows written before the D3 subject migration.
+//
+// Expired grants (expires_at in the past) are excluded for the same reason as
+// in PlatformRoleBindingRepository.ListMatching: this is the single path the
+// authorization middleware resolves bindings through, so filtering anywhere
+// else would leave an expired grant authorizing requests. now is passed in
+// so the emitted SQL stays deterministic for the DryRun regression test.
+func (r *BindingRepository) ListMatching(componentID uuid.UUID, userID uuid.UUID, subject string, groups []string) ([]models.ComponentRoleBinding, error) {
 	var bindings []models.ComponentRoleBinding
-	userStr := userID.String()
-	conds := r.DB.Where("subject_type = ? AND subject_id = ?", "user", userStr).
-		Or("user_id = ?", userID) // V1 legacy rows
+	conds := r.DB.Where("user_id = ?", userID) // V1 legacy rows
+	if subject != "" {
+		conds = conds.Or("subject_type = ? AND subject_id = ?", "user", subject)
+	}
 	if len(groups) > 0 {
 		conds = conds.Or("subject_type = ? AND subject_id IN ?", "group", groups)
 	}
-	err := r.DB.Where("component_id = ?", componentID).Where(conds).Find(&bindings).Error
+	err := r.DB.Where("component_id = ?", componentID).Where(conds).
+		Where("expires_at IS NULL OR expires_at > ?", time.Now()).
+		Find(&bindings).Error
 	return bindings, err
 }

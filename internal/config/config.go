@@ -28,6 +28,14 @@ type Config struct {
 	KeycloakClientID string
 	// LogLevel is the GORM log verbosity: silent / error / warn / info.
 	LogLevel string
+	// BindingReapInterval is how often the expired-grant reaper runs
+	// (ACCOUNT-PERMISSION-MODEL §7.4). Zero/negative disables the loop.
+	BindingReapInterval time.Duration
+	// ApprovalTimeoutInterval is how often pending approvals are checked
+	// against their task's declared timeout and auto-rejected (B-11 审批超时).
+	// 默认 60s：这是**行为正确性**（用户故事要求"超时后自动失败，而不是无限期
+	// 挂起"），不是可选的运维优化，故默认开启；≤0 关闭。
+	ApprovalTimeoutInterval time.Duration
 
 	// DB pool tuning (optional; db.Open applies sane defaults when zero).
 	DBMaxIdleConns    int
@@ -64,6 +72,14 @@ type Config struct {
 	ArtifactStoreSignSecret string
 	// Presigned/signed URL lifetime.
 	ArtifactStoreURLExpiry time.Duration
+	// ArtifactReconcileInterval is how often the report-only orphan
+	// reconciliation runs (backlog B-16 对账). **Zero disables it** — the job
+	// lists the object store, whose cost grows with the bucket, so it is
+	// opt-in (set ARTIFACT_RECONCILE_INTERVAL=86400 for a daily pass).
+	ArtifactReconcileInterval time.Duration
+	// ArtifactReconcilePrefix scopes the object listing (e.g. "components/").
+	// Empty means the whole store.
+	ArtifactReconcilePrefix string
 }
 
 func getenv(key, def string) string {
@@ -92,18 +108,22 @@ func getenvBool(key string, def bool) bool {
 // Load reads configuration from the environment.
 func Load() *Config {
 	return &Config{
-		Addr:              getenv("HUB_ADDR", ":8080"),
-		GatewayPath:       getenv("GATEWAY_PATH", "/gateway/ws"),
-		GatewayToken:      os.Getenv("GATEWAY_TOKEN"),
-		DBDSN:             getenv("DB_DSN", "postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable"),
-		KeycloakIssuer:    os.Getenv("KEYCLOAK_ISSUER"),
-		KeycloakClientID:  getenv("KEYCLOAK_CLIENT_ID", "sdp-console"),
-		LogLevel:          getenv("LOG_LEVEL", "warn"),
-		DBMaxIdleConns:    getenvInt("DB_MAX_IDLE_CONNS", 10),
-		DBMaxOpenConns:    getenvInt("DB_MAX_OPEN_CONNS", 100),
-		DBConnMaxLifetime: time.Duration(getenvInt("DB_CONN_MAX_LIFETIME", 3600)) * time.Second,
-		PprofEnabled:      getenvBool("HUB_PPROF_ENABLED", false),
-		SwaggerEnabled:    getenvBool("HUB_SWAGGER_ENABLED", false),
+		Addr:                getenv("HUB_ADDR", ":8080"),
+		GatewayPath:         getenv("GATEWAY_PATH", "/gateway/ws"),
+		GatewayToken:        os.Getenv("GATEWAY_TOKEN"),
+		DBDSN:               getenv("DB_DSN", "postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable"),
+		KeycloakIssuer:      os.Getenv("KEYCLOAK_ISSUER"),
+		KeycloakClientID:    getenv("KEYCLOAK_CLIENT_ID", "sdp-console"),
+		LogLevel:            getenv("LOG_LEVEL", "warn"),
+		DBMaxIdleConns:      getenvInt("DB_MAX_IDLE_CONNS", 10),
+		DBMaxOpenConns:      getenvInt("DB_MAX_OPEN_CONNS", 100),
+		DBConnMaxLifetime:   time.Duration(getenvInt("DB_CONN_MAX_LIFETIME", 3600)) * time.Second,
+		BindingReapInterval: time.Duration(getenvInt("BINDING_REAP_INTERVAL", 3600)) * time.Second,
+		// 60s 一轮：审批超时的粒度是分钟级，扫得比这更勤没有收益（每轮只是一次
+		// "取 Pending 行"的索引查询）。
+		ApprovalTimeoutInterval: time.Duration(getenvInt("APPROVAL_TIMEOUT_INTERVAL", 60)) * time.Second,
+		PprofEnabled:            getenvBool("HUB_PPROF_ENABLED", false),
+		SwaggerEnabled:          getenvBool("HUB_SWAGGER_ENABLED", false),
 
 		ArtifactStoreDriver:     os.Getenv("ARTIFACT_STORE_DRIVER"),
 		ArtifactStoreEndpoint:   os.Getenv("ARTIFACT_STORE_ENDPOINT"),
@@ -117,6 +137,9 @@ func Load() *Config {
 		ArtifactStorePublicURL:  getenv("ARTIFACT_STORE_PUBLIC_URL", "http://localhost:8080"),
 		ArtifactStoreSignSecret: os.Getenv("ARTIFACT_STORE_SIGN_SECRET"),
 		ArtifactStoreURLExpiry:  time.Duration(getenvInt("ARTIFACT_STORE_URL_EXPIRY", 900)) * time.Second,
+		// 默认 0 = 关闭（见字段注释）：对账要列对象存储，成本随桶增长，显式开启。
+		ArtifactReconcileInterval: time.Duration(getenvInt("ARTIFACT_RECONCILE_INTERVAL", 0)) * time.Second,
+		ArtifactReconcilePrefix:   os.Getenv("ARTIFACT_RECONCILE_PREFIX"),
 	}
 }
 

@@ -7,14 +7,16 @@ import (
 
 	artifactmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/models"
 	catalogmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/models"
-	clustermodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/cluster/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	componentmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/component/models"
+	credentialmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/models"
 	environmentmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environment/models"
+	environmentgroupmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/models"
 	orgmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/models"
 	permmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
 	runmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
+	targetmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/target/models"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -82,13 +84,19 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&orgmodels.Org{}, &orgmodels.ServiceTree{},
 		&catalogmodels.Service{},
 		&componentmodels.Component{}, &componentmodels.ComponentConfig{}, &componentmodels.ComponentConfigHistory{},
-		&clustermodels.Cluster{},
+		&targetmodels.Target{},
 		&environmentmodels.Environment{},
+		&credentialmodels.Credential{},
+		&environmentgroupmodels.EnvironmentGroup{},
 		&pipelinemodels.Pipeline{}, &pipelinemodels.PipelineStage{}, &pipelinemodels.PipelineTaskTemplate{}, &pipelinemodels.PipelineVersion{},
 		&artifactmodels.Artifact{},
 		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{}, &runmodels.PipelineApproval{},
 		&permmodels.Role{}, &permmodels.ComponentRoleBinding{}, &permmodels.User{},
 		&permmodels.PlatformRole{}, &permmodels.PlatformRoleBinding{}, &permmodels.ComponentRole{},
+		// ACCOUNT-PERMISSION-MODEL §3 / §5.1③ / §6 / §7.2 — the four tables
+		// that complete the permission model (2026-09-22 第八批).
+		&permmodels.ResourceOwnership{}, &permmodels.RoleAPIMapping{},
+		&permmodels.AuditLog{}, &permmodels.PermissionRequest{},
 	); err != nil {
 		return nil, err
 	}

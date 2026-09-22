@@ -27,22 +27,22 @@ type fakeDispatcher struct {
 	lastPayload *runnerapi.ApplyPipelineRunPayload
 }
 
-func (f *fakeDispatcher) Dispatch(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.ApplyPipelineRunPayload) error {
+func (f *fakeDispatcher) Dispatch(ctx context.Context, targetID uuid.UUID, payload *runnerapi.ApplyPipelineRunPayload) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fail {
 		return errOffline
 	}
-	f.dispatched = append(f.dispatched, clusterID)
+	f.dispatched = append(f.dispatched, targetID)
 	f.lastPayload = payload
 	return nil
 }
 
-func (f *fakeDispatcher) Approve(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.ApproveTaskPayload) error {
+func (f *fakeDispatcher) Approve(ctx context.Context, targetID uuid.UUID, payload *runnerapi.ApproveTaskPayload) error {
 	return nil
 }
 
-func (f *fakeDispatcher) RolloutControl(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.RolloutControlPayload) error {
+func (f *fakeDispatcher) RolloutControl(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RolloutControlPayload) error {
 	return nil
 }
 
@@ -86,13 +86,13 @@ func (s *fakeDispatchStore) GetByID(id uuid.UUID) (*models.DispatchJob, error) {
 	return &cp, nil
 }
 
-func (s *fakeDispatchStore) ListPendingByCluster(clusterID uuid.UUID) ([]models.DispatchJob, error) {
+func (s *fakeDispatchStore) ListPendingByTarget(targetID uuid.UUID) ([]models.DispatchJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []models.DispatchJob
 	for _, id := range s.order {
 		j := s.jobs[id]
-		if j.ClusterID == clusterID && (j.State == models.DispatchJobPending || j.State == models.DispatchJobFailed) {
+		if j.TargetID == targetID && (j.State == models.DispatchJobPending || j.State == models.DispatchJobFailed) {
 			out = append(out, *j)
 		}
 	}
@@ -230,11 +230,11 @@ func TestTriggerOfflineRunNotFailed(t *testing.T) {
 	disp := &fakeDispatcher{fail: true}
 	svc := newTestService(disp, store)
 
-	runID, clusterID := uuid.New(), uuid.New()
+	runID, targetID := uuid.New(), uuid.New()
 	run := &models.PipelineRun{ID: runID, Phase: runnerapi.PipelineRunPending}
 
 	// Mirror of Trigger's tail: only a persistence error is fatal.
-	err := svc.enqueueDispatch(run.ID, clusterID, samplePayload())
+	err := svc.enqueueDispatch(run.ID, targetID, samplePayload())
 	if err != nil {
 		run.Phase = runnerapi.PipelineRunFailed
 	}
@@ -257,15 +257,15 @@ func TestTriggerOfflineRunNotFailed(t *testing.T) {
 	}
 }
 
-// TestDrainClusterRedeliversOnReconnect: a job enqueued while offline is
-// delivered when the Runner reconnects (DrainCluster).
-func TestDrainClusterRedeliversOnReconnect(t *testing.T) {
+// TestDrainTargetRedeliversOnReconnect: a job enqueued while offline is
+// delivered when the Runner reconnects (DrainTarget).
+func TestDrainTargetRedeliversOnReconnect(t *testing.T) {
 	store := newFakeDispatchStore()
 	disp := &fakeDispatcher{fail: true} // start offline
 	svc := newTestService(disp, store)
 
-	runID, clusterID := uuid.New(), uuid.New()
-	if err := svc.enqueueDispatch(runID, clusterID, samplePayload()); err != nil {
+	runID, targetID := uuid.New(), uuid.New()
+	if err := svc.enqueueDispatch(runID, targetID, samplePayload()); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
 	if disp.count() != 0 {
@@ -274,7 +274,7 @@ func TestDrainClusterRedeliversOnReconnect(t *testing.T) {
 
 	// Runner comes online.
 	disp.fail = false
-	if err := svc.DrainCluster(context.Background(), clusterID); err != nil {
+	if err := svc.DrainTarget(context.Background(), targetID); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 
@@ -285,8 +285,8 @@ func TestDrainClusterRedeliversOnReconnect(t *testing.T) {
 	if jobs[0].State != models.DispatchJobDispatched {
 		t.Fatalf("job should be dispatched after reconnect, got %s", jobs[0].State)
 	}
-	if disp.count() != 1 || disp.dispatched[0] != clusterID {
-		t.Fatalf("dispatcher should be called once for the cluster, got %v", disp.dispatched)
+	if disp.count() != 1 || disp.dispatched[0] != targetID {
+		t.Fatalf("dispatcher should be called once for the target, got %v", disp.dispatched)
 	}
 }
 
@@ -297,10 +297,10 @@ func TestWriteFailureRetriesThenDead(t *testing.T) {
 	disp := &fakeDispatcher{fail: true}
 	svc := newTestService(disp, store)
 
-	runID, clusterID := uuid.New(), uuid.New()
+	runID, targetID := uuid.New(), uuid.New()
 	if err := store.Create(&models.DispatchJob{
 		PipelineRunID: runID,
-		ClusterID:     clusterID,
+		TargetID:      targetID,
 		Payload:       mustMarshal(t, samplePayload()),
 		State:         models.DispatchJobPending,
 	}); err != nil {
@@ -331,10 +331,10 @@ func TestSweepPendingRetriesDueJobs(t *testing.T) {
 	disp := &fakeDispatcher{fail: false}
 	svc := newTestService(disp, store)
 
-	runID, clusterID := uuid.New(), uuid.New()
+	runID, targetID := uuid.New(), uuid.New()
 	if err := store.Create(&models.DispatchJob{
 		PipelineRunID: runID,
-		ClusterID:     clusterID,
+		TargetID:      targetID,
 		Payload:       mustMarshal(t, samplePayload()),
 		State:         models.DispatchJobFailed,
 		Attempts:      3,

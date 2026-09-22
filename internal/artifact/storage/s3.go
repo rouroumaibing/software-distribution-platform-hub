@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -69,3 +70,40 @@ func (s *S3) PresignUpload(key string, expiry time.Duration) (string, error) {
 func (s *S3) Delete(key string) error {
 	return s.cli.RemoveObject(context.Background(), s.bucket, key, minio.RemoveObjectOptions{})
 }
+
+// ListObjects walks the bucket (optionally under a prefix) up to limit, in
+// lexicographic key order. Used only by the B-16 orphan reconciliation job —
+// it is a read-only, potentially expensive operation, which is why it lives on
+// Enumerator rather than on Client.
+//
+// limit <= 0 means "no bound" (the caller decides; the reconciliation job
+// always passes one so a multi-million-object bucket cannot exhaust memory).
+func (s *S3) ListObjects(prefix string, limit int) ([]ObjectInfo, bool, error) {
+	ctx := context.Background()
+	// ListObjects 本身不校验 key（它不是对象 key 而是**前缀**），但仍拒绝绝对
+	// 路径 / ".." 这类会让人误以为能越出桶的写法。
+	if prefix != "" {
+		if err := ValidateKey(strings.TrimSuffix(prefix, "/")); err != nil {
+			return nil, false, err
+		}
+	}
+	ch := s.cli.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true})
+	out := make([]ObjectInfo, 0)
+	for obj := range ch {
+		if obj.Err != nil {
+			return nil, false, obj.Err
+		}
+		if obj.Key == "" || strings.HasSuffix(obj.Key, "/") {
+			continue // 目录占位对象不是制品
+		}
+		if limit > 0 && len(out) == limit {
+			return out, true, nil
+		}
+		out = append(out, ObjectInfo{Key: obj.Key, Size: obj.Size})
+	}
+	return out, false, nil
+}
+
+// Enumerator is implemented by this driver; the reconciliation job asserts for
+// it at wiring time.
+var _ Enumerator = (*S3)(nil)

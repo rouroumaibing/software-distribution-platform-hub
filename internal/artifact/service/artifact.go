@@ -9,6 +9,7 @@ import (
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/repository"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/storage"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 )
 
 // ArtifactService has no Update — artifacts are immutable once registered.
@@ -37,7 +38,18 @@ func (s *ArtifactService) ListByComponent(componentID uuid.UUID, p common.Pagina
 	return s.repo.FindByComponentID(componentID, p)
 }
 
-// Delete removes the DB row and best-effort deletes the underlying object.
+// Delete removes the DB row, then best-effort deletes the underlying object —
+// but no longer swallows the object error (backlog B-16 源头治理 /
+// DELETE-CONTRACT §6.6-4 决策 4 第 1 步).
+//
+// 顺序与语义:
+//   - 元数据行是权威记录，先删它；删成功即本次调用成功。
+//   - 对象删除是**事后清理**。失败不会被吞掉，而是记结构化日志（artifact id /
+//     component / storage key / 原因）—— 这正是"孤儿对象"的来源，必须可观测。
+//   - 不把对象删除失败升级成 API 错误：元数据已经删了，返回失败会让调用方以为
+//     行还在并去重试，而重试只会拿到 404 —— 那是在对调用方撒谎。
+//   - 清理失败目前没有自动重试/标记列（`cleanup_state`），由对账任务兜底：那属
+//     backlog B-16 的"对账（仅报告）"项，按 §6.6-4 排期在本轮之后。
 func (s *ArtifactService) Delete(id uuid.UUID) error {
 	a, err := s.repo.GetByID(id)
 	if err != nil {
@@ -46,8 +58,13 @@ func (s *ArtifactService) Delete(id uuid.UUID) error {
 	if err := s.repo.Delete(id); err != nil {
 		return err
 	}
-	if s.store != nil {
-		_ = s.store.Delete(a.StorageKey) // object already unreferenced; nothing to roll back
+	if s.store == nil {
+		// 对象存储未配置：没有对象可删，元数据删除已是全部工作。
+		return nil
+	}
+	if err := s.store.Delete(a.StorageKey); err != nil {
+		applog.Warnf("artifact: object cleanup failed (orphan object possible) id=%s component=%s key=%s err=%v",
+			a.ID, a.ComponentID, a.StorageKey, err)
 	}
 	return nil
 }

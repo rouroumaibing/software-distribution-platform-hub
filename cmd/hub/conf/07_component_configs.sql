@@ -10,7 +10,7 @@
 INSERT INTO component_configs (id, component_id, environment_id, key, value, is_secret, secret_ref, description, created_by, updated_by, created_at, updated_at) VALUES
 -- order-service: 全局默认
 ('f1000000-0000-0000-0000-000000000001', 'b2000000-0000-0000-0000-000000000004', NULL, 'replicas',   '3', false, '',           '副本数', NULL, NULL, now() - interval '30 days', now() - interval '30 days'),
-('f1000000-0000-0000-0000-000000000002', 'b2000000-0000-0000-0000-000000000004', NULL, 'db.host',    'postgres.sdp-system.svc', false, '', '订单库地址', NULL, NULL, now() - interval '30 days', now() - interval '30 days'),
+('f1000000-0000-0000-0000-000000000002', 'b2000000-0000-0000-0000-000000000004', NULL, 'db.host',    'postgres.sdp-workflow.svc', false, '', '订单库地址', NULL, NULL, now() - interval '30 days', now() - interval '30 days'),
 ('f1000000-0000-0000-0000-000000000003', 'b2000000-0000-0000-0000-000000000004', NULL, 'db.password','', true, 'secret/order-db', '订单库密码(引用 K8s Secret)', NULL, NULL, now() - interval '30 days', now() - interval '30 days'),
 -- order-service: dev 环境覆盖
 ('f1000000-0000-0000-0000-000000000004', 'b2000000-0000-0000-0000-000000000004', 'c2000000-0000-0000-0000-000000000001', 'replicas', '1', false, '', '开发环境只跑 1 副本', NULL, NULL, now() - interval '20 days', now() - interval '20 days'),

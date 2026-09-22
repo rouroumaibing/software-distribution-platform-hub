@@ -15,10 +15,10 @@ import (
 type PipelineRun struct {
 	ID         uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	PipelineID uuid.UUID `gorm:"type:uuid;not null;index" json:"pipelineId"`
-	ClusterID  uuid.UUID `gorm:"type:uuid;not null" json:"clusterId"`
+	TargetID   uuid.UUID `gorm:"type:uuid;not null" json:"targetId"`
 
 	// Bridges this row to the live K8s object: kubectl get pipelinerun
-	// {CRName} -n {CRNamespace} --context {cluster}.
+	// {CRName} -n {CRNamespace} --context {target}.
 	CRName      string `gorm:"size:256;not null" json:"crName"`
 	CRNamespace string `gorm:"size:128;not null" json:"crNamespace"`
 

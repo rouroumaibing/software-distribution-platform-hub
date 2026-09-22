@@ -14,7 +14,7 @@ import (
 //
 // Chunks are ordered by (created_at, id) so emission order is preserved
 // without an explicit sequence counter — the Runner streams them in order
-// over a single WebSocket connection per cluster.
+// over a single WebSocket connection per target.
 type TaskRunLog struct {
 	ID            uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 	PipelineRunID uuid.UUID `gorm:"type:uuid;not null;index" json:"pipelineRunId"`

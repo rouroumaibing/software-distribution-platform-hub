@@ -32,3 +32,30 @@ func (r *PlatformRoleRepository) GetByName(name string) (*models.PlatformRole, e
 	err := r.DB.Where("name = ?", name).First(&item).Error
 	return &item, err
 }
+
+// Create inserts a platform role (C-10: platform admins define roles through
+// the API instead of only via seed SQL).
+func (r *PlatformRoleRepository) Create(item *models.PlatformRole) error {
+	return r.DB.Create(item).Error
+}
+
+// Update writes a role back. Callers must read the current row first and
+// repopulate every column they do not intend to change: GORM's Save writes
+// all mapped columns, so a partially-filled struct would NULL the rest
+// (the same trap the hub's service layer already documents elsewhere).
+func (r *PlatformRoleRepository) Update(item *models.PlatformRole) error {
+	return r.DB.Save(item).Error
+}
+
+func (r *PlatformRoleRepository) Delete(id uuid.UUID) error {
+	return r.DB.Delete(&models.PlatformRole{}, "id = ?", id).Error
+}
+
+// CountBindings reports how many bindings reference the role; a role in use
+// must not be deleted (mirrors the repo's own deletion-contract habit of
+// refusing rather than orphaning).
+func (r *PlatformRoleRepository) CountBindings(id uuid.UUID) (int64, error) {
+	var n int64
+	err := r.DB.Model(&models.PlatformRoleBinding{}).Where("platform_role_id = ?", id).Count(&n).Error
+	return n, err
+}

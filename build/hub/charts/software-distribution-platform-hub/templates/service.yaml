@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .Values.basic.component }}
+  namespace: {{ .Values.namespace }}
   labels:
     app: {{ .Values.basic.component }}
 spec:

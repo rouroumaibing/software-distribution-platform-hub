@@ -4,16 +4,30 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/component/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/component/repository"
 )
 
-type ComponentConfigService struct {
-	repo *repository.ComponentConfigRepository
+// EnvKeyResolver resolves an environment id to its human-readable key, so the
+// config audit trail can carry a denormalized environment_key snapshot. The FK
+// from component_config_history.environment_id to environments was dropped
+// (B-14 / DELETE-CONTRACT §6.6-2) precisely so history outlives environment
+// deletion; the snapshot is what keeps a deleted environment's rows readable.
+//
+// Deliberately a one-method interface returning a plain string: the component
+// package must not import environment/models just to read a single column.
+type EnvKeyResolver interface {
+	ResolveKey(envID uuid.UUID) (string, error)
 }
 
-func NewComponentConfigService(repo *repository.ComponentConfigRepository) *ComponentConfigService {
-	return &ComponentConfigService{repo: repo}
+type ComponentConfigService struct {
+	repo    *repository.ComponentConfigRepository
+	envKeys EnvKeyResolver
+}
+
+func NewComponentConfigService(repo *repository.ComponentConfigRepository, envKeys EnvKeyResolver) *ComponentConfigService {
+	return &ComponentConfigService{repo: repo, envKeys: envKeys}
 }
 
 func (s *ComponentConfigService) List(componentID uuid.UUID, environmentID *uuid.UUID, p common.Pagination) ([]models.ComponentConfig, int64, error) {
@@ -24,6 +38,22 @@ func (s *ComponentConfigService) List(componentID uuid.UUID, environmentID *uuid
 // environmentID to match the global default row.
 func (s *ComponentConfigService) GetByKey(componentID uuid.UUID, key string, environmentID *uuid.UUID) (*models.ComponentConfig, error) {
 	return s.repo.GetByKey(componentID, key, environmentID)
+}
+
+// envKeySnapshot resolves the environment key stamped onto a history row. A nil
+// environment (global default config) yields "". A resolution failure is logged
+// and degrades to "" rather than blocking the config write — the audit row
+// records what happened, it is not a correctness gate.
+func (s *ComponentConfigService) envKeySnapshot(envID *uuid.UUID) string {
+	if envID == nil || s.envKeys == nil {
+		return ""
+	}
+	key, err := s.envKeys.ResolveKey(*envID)
+	if err != nil {
+		applog.Warnf("component config: cannot resolve environment key for %s: %v", envID, err)
+		return ""
+	}
+	return key
 }
 
 // Upsert creates or updates a config key and writes an audit row. Secret
@@ -42,12 +72,13 @@ func (s *ComponentConfigService) Upsert(cfg *models.ComponentConfig, changedBy *
 		newValue = "<secret>"
 	}
 	return s.repo.LogHistory(&models.ComponentConfigHistory{
-		ComponentID:   cfg.ComponentID,
-		EnvironmentID: cfg.EnvironmentID,
-		Key:           cfg.Key,
-		Action:        action,
-		NewValue:      newValue,
-		ChangedBy:     changedBy,
+		ComponentID:    cfg.ComponentID,
+		EnvironmentID:  cfg.EnvironmentID,
+		EnvironmentKey: s.envKeySnapshot(cfg.EnvironmentID),
+		Key:            cfg.Key,
+		Action:         action,
+		NewValue:       newValue,
+		ChangedBy:      changedBy,
 	})
 }
 
@@ -67,11 +98,12 @@ func (s *ComponentConfigService) Delete(id uuid.UUID, changedBy *uuid.UUID) erro
 		oldValue = "<secret>"
 	}
 	return s.repo.LogHistory(&models.ComponentConfigHistory{
-		ComponentID:   old.ComponentID,
-		EnvironmentID: old.EnvironmentID,
-		Key:           old.Key,
-		Action:        "delete",
-		OldValue:      oldValue,
-		ChangedBy:     changedBy,
+		ComponentID:    old.ComponentID,
+		EnvironmentID:  old.EnvironmentID,
+		EnvironmentKey: s.envKeySnapshot(old.EnvironmentID),
+		Key:            old.Key,
+		Action:         "delete",
+		OldValue:       oldValue,
+		ChangedBy:      changedBy,
 	})
 }

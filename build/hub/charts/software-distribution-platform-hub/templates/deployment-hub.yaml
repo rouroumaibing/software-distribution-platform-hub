@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Values.basic.component }}
+  namespace: {{ .Values.namespace }}
   labels:
     app: {{ .Values.basic.component }}
     version: v1
@@ -28,6 +29,12 @@ spec:
               value: {{ .Values.gateway.path }}
             - name: GATEWAY_TOKEN
               value: {{ .Values.gateway.token }}
+            # 鉴权（OIDC）：与 console chart 的 auth.* 同源（values.yaml 的 auth 段）。
+            # ISSUER 为空 => hub 关闭鉴权（dev 模式，AuthDisabled() 为真）；打开须与 console 的 issuer 一致。
+            - name: KEYCLOAK_ISSUER
+              value: {{ .Values.auth.keycloakIssuerUrl | default "" | trimSuffix "/" | quote }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .Values.auth.keycloakClientId | default "sdp-console" | quote }}
             - name: DB_DSN
               value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.pwd }}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.dbname }}?sslmode=disable"
             - name: LOG_LEVEL
@@ -38,6 +45,23 @@ spec:
               value: {{ .Values.artifact.localRoot }}
             - name: ARTIFACT_STORE_PUBLIC_URL
               value: {{ .Values.artifact.publicUrl }}
+            # 版本矩阵（CM package-versions，模板 configmap-package-versions.yaml）：
+            # 供接入管理展示与 runner 安装/升级取值；hub 侧端点 GET /package-versions 待实现
+            - name: PACKAGE_VERSION_CONSOLE
+              valueFrom:
+                configMapKeyRef:
+                  name: package-versions
+                  key: console
+            - name: PACKAGE_VERSION_HUB
+              valueFrom:
+                configMapKeyRef:
+                  name: package-versions
+                  key: hub
+            - name: PACKAGE_VERSION_RUNNER
+              valueFrom:
+                configMapKeyRef:
+                  name: package-versions
+                  key: runner
           image: {{ .Values.image.imageAddr }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:

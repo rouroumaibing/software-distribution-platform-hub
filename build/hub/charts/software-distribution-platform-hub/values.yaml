@@ -1,3 +1,8 @@
+# 默认命名空间（2026-09-21 约定反转）：
+# 所有名字空间内资源模板注入 metadata.namespace: {{ .Values.namespace }}，默认 sdp-workflow。
+# 安装时若 helm -n 与 values.namespace 不一致，以本值（values.namespace）为准。
+namespace: sdp-workflow
+
 basic:
   # k8s 资源名统一用短名（与 deploy/manifests、console nginx 反代、runner gateway url 一致）；
   # 镜像名才是全名
@@ -24,9 +29,18 @@ gateway:
   path: /gateway/ws
   token: sdp-dev-token-2026
 
-# hub 仅支持 postgres，实例需先就绪（P0 由 deploy/manifests/10-postgres.yaml 提供）
+# 鉴权（hub 侧 OIDC 校验）：键名与 console chart 的 auth.* 对齐 —— 同一套值同时喂两端，避免 issuer 漂移。
+# keycloakIssuerUrl 置空 => KEYCLOAK_ISSUER 为空 => hub 走 dev 模式、不挂鉴权中间件（当前默认）。
+# 打开时必须与 console 的 VITE_KEYCLOAK_ISSUER_URL 完全一致：hub 校验 token 的 iss（来源）与 azp（客户端）。
+# 取值即 realm 的公开地址，例：https://www.sdpworkflow.com/keycloak/realms/sdp（末尾斜杠会被模板去掉）。
+auth:
+  keycloakIssuerUrl: ""
+  # 对应 console 的 public client（realm 预置里的 sdp-console）；与 cmd/hub 的 KEYCLOAK_CLIENT_ID 默认值一致。
+  keycloakClientId: "sdp-console"
+
+# hub 仅支持 postgres，实例需先就绪（P0 由 deploy/manifests/10-postgres.yaml 提供，命名空间 sdp-workflow）
 postgres:
-  host: postgres.sdp-system.svc
+  host: postgres.sdp-workflow.svc
   port: "5432"
   user: sdp
   pwd: sdp
@@ -36,8 +50,99 @@ postgres:
 artifact:
   driver: local
   localRoot: /data/artifacts
-  publicUrl: http://hub.sdp-system.svc:8080
+  publicUrl: http://hub.sdp-workflow.svc:8080
   storage: 10Gi
 
 log:
   level: info
+
+# 平台发布版本配套（ConfigMap package-versions 的取值来源）。
+# 由 build/hub/build.sh 按 build/hub/versions.yaml 在打包时渲染 —— 勿手改（改了会被构建覆盖）。
+# 消费链路：本段 -> CM package-versions -> hub 读取 -> GET /package-versions -> console 接入管理
+packageVersions:
+  console: v0.0.1
+  hub: v0.0.1
+  runner: v0.0.1
+
+# Keycloak 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork），
+# 已 vendor 进 charts/keycloak（固定版本，随 hub 一并安装）；console 本期仍 authDisabled，keycloak 先随 hub 起好。
+# 值结构透传 keycloakx chart（子 chart 作用域即 keycloak.*）；DB 接本平台 postgres（sdp-workflow）。
+keycloak:
+  # 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork）。
+  # 首次启动的 master realm 管理员（= Keycloak 管理台 /keycloak/admin 的登录账号）：
+  # keycloakx 7.x 不再用 init/secrets.admin，须在首次 start 通过 KEYCLOAK_ADMIN* 环境变量引导。
+  # 注意：仅"master realm 尚无 admin"时生效 —— 若已用旧口令启动过，改这里不会改掉已有口令
+  #      （需先删该用户，或用 kc.sh bootstrap-admin user 重置）。
+  # 与 realm 预置用户 admin（见 templates/keycloak-realm-configmap.yaml 的 sdp-realm.json）
+  # 是**两个 realm 的两个账号**（master vs sdp），此处刻意用同一口令，dev 只记一套。
+  # 生产改 KEYCLOAK_ADMIN_PASSWORD 为 valueFrom secretKeyRef（existingSecret）。
+  image:
+    repository: quay.io/keycloak/keycloak
+    tag: "26.7.4"
+  extraEnv: |
+    - name: KEYCLOAK_ADMIN
+      value: admin
+    - name: KEYCLOAK_ADMIN_PASSWORD
+      value: "sdp@12345"
+  # 挂载项目 realm（templates/keycloak-realm-configmap.yaml）并在启动时导入。
+  # extraVolumes/extraVolumeMounts 为 keycloakx 的 string 类型（经 tpl 注入 StatefulSet volumes/volumeMounts）。
+  extraVolumes: |
+    - name: sdp-realm-import
+      configMap:
+        name: sdp-keycloak-realm
+  extraVolumeMounts: |
+    - name: sdp-realm-import
+      mountPath: /opt/keycloak/data/import
+      readOnly: true
+  args:
+    # keycloakx 会以此替换镜像 CMD：等效 kc.sh start --import-realm；
+    # 务必带 start 子命令，否则只剩 --import-realm 会因缺子命令启动失败。
+    - "start"
+    - "--import-realm"
+  # 接本平台 postgres（deploy/manifests/10-postgres.yaml：sdp/sdp@postgres.sdp-workflow.svc:5432，trust 认证）。
+  # chart 自动按 database.* 拼 KC_DB_URL_HOST/PORT/DATABASE/USERNAME，勿在 extraEnv 重复设 KC_DB_URL / KEYCLOAK_ADMIN。
+  database:
+    vendor: postgres
+    hostname: postgres.sdp-workflow.svc
+    port: 5432
+    database: sdp
+    username: sdp
+    password: sdp
+  serviceAccount:
+    create: false
+  # 对外入口：与 console 同域名、路径前缀 /keycloak，由 nginx-ingress 按「最长前缀」路由，不干扰 console 的 /。
+  # 后端为 HTTP（keycloak svc 端口名 http：80 -> 8080）；console ingress 上的 backend-protocol=HTTPS 是它自己的注记，不会外溢到本 Ingress。
+  # TLS 复用 console 的 ingress 证书 secret（同一 host 共用一张证书；改名需两个 chart 同步改）。
+  # ⚠️ 生产建议给管理台加来源限制：nginx.ingress.kubernetes.io/whitelist-source-range。
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    servicePort: http
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-buffer-size: 128k
+    rules:
+      - host: www.sdpworkflow.com
+        paths:
+          - path: /keycloak
+            pathType: Prefix
+    tls:
+      - hosts:
+          - www.sdpworkflow.com
+        secretName: console-ingress-tls
+  # 反向代理置于 nginx-ingress 之后。⚠️ mode 必须是 xforwarded，不是 keycloakx 的默认值 forwarded：
+  #   forwarded  => 解析 RFC 7239 的 `Forwarded` 头；xforwarded => 解析 `X-Forwarded-*` 头。
+  #   nginx-ingress（本仓 05-ingress-nginx.yaml，ConfigMap data:null 即原版）只发
+  #   X-Forwarded-For / Proto / Host / Port，不发 RFC 7239 `Forwarded`。
+  #   用 forwarded 会解析不到原 scheme/host => 令牌 iss 被推导成集群内地址，hub 校验必然失败。
+  # 置为 xforwarded 后 keycloak 由 X-Forwarded-* 推导前端地址，令牌 iss 即
+  #   https://<host><relativePath>/realms/sdp（无需再设 KC_HOSTNAME；相对路径已与 ingress 前缀一致）。
+  # 另：不设 proxy-headers 时经代理访问会 403（origin 校验），故此项必设。
+  proxy:
+    enabled: true
+    mode: xforwarded
+  # 相对路径刻意不用 Keycloak 默认的 /auth：console 是 SPA，其 OIDC 回调路由就是 /auth/callback
+  # （console/src/router/index.ts）。若 keycloak 占住 /auth 前缀，nginx-ingress 会按最长前缀把
+  # /auth/callback 路由到 keycloak，登录回调直接失败。故改用专属前缀 /keycloak（console 侧零占用）——
+  # 结构性隔离，不依赖路由优先级。改此处须同步 console 侧 issuer（auth.keycloakIssuerUrl）。
+  http:
+    relativePath: /keycloak

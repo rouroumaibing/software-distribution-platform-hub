@@ -1,0 +1,245 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # 项目 realm：随 hub 安装时由 keycloak 子 chart 通过 --import-realm 导入。
+  # 挂载点见 values.yaml 的 keycloak.extraVolumes/extraVolumeMounts（/opt/keycloak/data/import）。
+  name: sdp-keycloak-realm
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.basic.component }}
+data:
+  sdp-realm.json: |-
+    {
+      "id": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+      "realm": "sdp",
+      "displayName": "Software Distribution Platform",
+      "displayNameHtml": "<div class=\"kc-logo-text\"><span>SDP</span></div>",
+      "enabled": true,
+      "sslRequired": "none",
+      "loginWithEmailAllowed": true,
+      "registrationAllowed": true,
+      "resetPasswordAllowed": true,
+      "rememberMe": false,
+      "verifyEmail": false,
+      "editUsernameAllowed": false,
+      "duplicateEmailsAllowed": false,
+      "requiredCredentials": [
+        "password"
+      ],
+      "defaultLocale": "zh-CN",
+      "internationalizationEnabled": true,
+      "supportedLocales": [
+        "zh-CN"
+      ],
+      "accessTokenLifespan": 300,
+      "accessTokenLifespanForImplicitFlow": 900,
+      "ssoSessionIdleTimeout": 1800,
+      "ssoSessionMaxLifespan": 36000,
+      "offlineSessionMaxLifespan": 5184000,
+      "roles": {
+        "realm": [
+          {
+            "name": "default-roles-sdp",
+            "description": "${role_default-roles}",
+            "composite": true,
+            "composites": {
+              "realm": [
+                "offline_access",
+                "uma_authorization"
+              ],
+              "client": {
+                "account": [
+                  "manage-account",
+                  "view-profile"
+                ]
+              }
+            },
+            "clientRole": false,
+            "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+            "attributes": {}
+          },
+          {
+            "name": "view",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+            "attributes": {}
+          },
+          {
+            "name": "edit",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+            "attributes": {}
+          },
+          {
+            "name": "admin",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+            "attributes": {}
+          }
+        ]
+      },
+      "defaultRole": {
+        "name": "default-roles-sdp",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "clientRole": false,
+        "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d"
+      },
+      "clients": [
+        {
+          "clientId": "sdp-console",
+          "name": "SDP Console",
+          "enabled": true,
+          "publicClient": true,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": false,
+          "bearerOnly": false,
+          "consentRequired": false,
+          "redirectUris": [
+            "https://www.sdpworkflow.com/*"
+          ],
+          "webOrigins": [
+            "https://www.sdpworkflow.com"
+          ],
+          "baseUrl": "/keycloak/realms/sdp/account",
+          "protocol": "openid-connect",
+          "attributes": {
+            "pkce.code.challenge.method": "S256",
+            "post.logout.redirect.uris": "+"
+          },
+          "fullScopeAllowed": true,
+          "defaultClientScopes": [
+            "web-origins",
+            "acr",
+            "profile",
+            "roles",
+            "email"
+          ],
+          "optionalClientScopes": [
+            "address",
+            "phone",
+            "offline_access",
+            "microprofile-jwt"
+          ],
+          "protocolMappers": [
+            {
+              "name": "roles",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-realm-role-mapper",
+              "consentRequired": false,
+              "config": {
+                "multivalued": "true",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "roles",
+                "jsonType.label": "String"
+              }
+            },
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "groups",
+                "userinfo.token.claim": "true"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "sdp-backend",
+          "name": "SDP Backend",
+          "enabled": true,
+          "publicClient": false,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "bearerOnly": false,
+          "consentRequired": false,
+          "redirectUris": [
+            "*"
+          ],
+          "webOrigins": [],
+          "secret": "**********",
+          "protocol": "openid-connect",
+          "attributes": {
+            "post.logout.redirect.uris": "+"
+          },
+          "fullScopeAllowed": true,
+          "defaultClientScopes": [
+            "web-origins",
+            "acr",
+            "profile",
+            "roles",
+            "email"
+          ],
+          "optionalClientScopes": [
+            "address",
+            "phone",
+            "offline_access",
+            "microprofile-jwt"
+          ]
+        }
+      ],
+      "groups": [
+        {
+          "name": "sdp-admin",
+          "path": "/sdp-admin",
+          "attributes": {},
+          "realmRoles": [],
+          "clientRoles": {},
+          "subGroups": []
+        }
+      ],
+      "users": [
+        {
+          "username": "admin",
+          "enabled": true,
+          "emailVerified": true,
+          "email": "admin@sdpworkflow.com",
+          "firstName": "SDP",
+          "lastName": "Admin",
+          "credentials": [
+            {
+              "type": "password",
+              "value": "sdp@12345",
+              "temporary": false
+            }
+          ],
+          "disableableCredentialTypes": [],
+          "requiredActions": [],
+          "realmRoles": [
+            "default-roles-sdp",
+            "admin"
+          ],
+          "notBefore": 0,
+          "groups": [
+            "/sdp-admin"
+          ]
+        },
+        {
+          "username": "service-account-sdp-backend",
+          "enabled": true,
+          "emailVerified": false,
+          "serviceAccountClientId": "sdp-backend",
+          "disableableCredentialTypes": [],
+          "requiredActions": [],
+          "realmRoles": [
+            "default-roles-sdp"
+          ],
+          "notBefore": 0,
+          "groups": []
+        }
+      ]
+    }

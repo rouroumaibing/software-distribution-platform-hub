@@ -3,7 +3,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
-  namespace: sdp-system
+  namespace: sdp-workflow
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
@@ -14,7 +14,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
-  namespace: sdp-system
+  namespace: sdp-workflow
   labels:
     app: postgres
 spec:
@@ -59,7 +59,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: postgres
-  namespace: sdp-system
+  namespace: sdp-workflow
 spec:
   type: ClusterIP
   selector:

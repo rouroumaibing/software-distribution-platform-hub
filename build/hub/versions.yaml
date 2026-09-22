@@ -1,0 +1,25 @@
+# 平台发布版本配套清单 —— package-versions ConfigMap 的事实源（唯一人工填写点）
+#
+# 用途：三仓各自独立 release（tag 互不知情），配套关系必须显式写下来。
+#       发布 hub release 前，人工确认下面三个版本号即为本次要配套发布的一套。
+#
+# 校验：build/hub/build.sh 打包时会读本文件
+#       - 三键任一缺失/为空、或不是合法 SemVer → 构建失败
+#       - hub 一项与本 release tag 不一致 → 只告警（以 release tag 为准，tag 是发布动作的权威输入）
+#       - 另两仓以本文件取值为准
+#
+# 版本号规范（SemVer 2.0.0，https://semver.org/lang/zh-CN/）：
+#   - 形如 vMAJOR.MINOR.PATCH；v 前缀是 git tag 约定，不属于 SemVer 本体（写进 Chart.yaml 时会去掉）
+#   - 三个组件各自独立演进，**不必同号**（例：console v0.1.1 + hub v0.1.1 + runner v0.1.2-r1 即一套）
+#   - 带 -r1 这类后缀 = pre-release，SemVer 规定它优先级**低于**同号正式版（0.1.2-r1 < 0.1.2）；
+#     若本意是"正式版之后的重制"，更贴切的是升 patch（0.1.3）；build metadata（+r1）不参与排序，
+#     但 Docker/OCI 镜像 tag **不允许 +**，故镜像 tag 上只能用 - 形式
+#   - 例：console: v0.1.1 / hub: v0.1.1 / runner: v0.1.2-r1
+#
+# 消费链路：本文件 → build.sh 渲染 → hub chart 的 values.packageVersions
+#           → ConfigMap package-versions → hub 读取 → GET /package-versions → console 接入管理
+#
+# 相关：docs/hub/DATA-MODEL.md §9.10（版本矩阵）
+console: v0.0.1
+hub: v0.0.1
+runner: v0.0.1

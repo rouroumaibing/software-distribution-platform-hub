@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,68 @@ func (l *Local) Delete(key string) error {
 	}
 	return nil
 }
+
+// ListObjects walks the local root (optionally under a prefix) up to limit,
+// returning keys in lexicographic order. Same contract as the S3 driver's.
+//
+// 半成品文件（上传中的 `.part`）刻意不出现在结果里：它们不是制品，把它们报成
+// "孤儿对象"只会制造噪声，掩盖真实的残留。
+func (l *Local) ListObjects(prefix string, limit int) ([]ObjectInfo, bool, error) {
+	if prefix != "" {
+		if err := ValidateKey(strings.TrimSuffix(prefix, "/")); err != nil {
+			return nil, false, err
+		}
+	}
+	root := l.root
+	if prefix != "" {
+		joined, err := l.resolve(strings.TrimSuffix(prefix, "/"))
+		if err != nil {
+			return nil, false, err
+		}
+		root = joined
+	}
+
+	out := make([]ObjectInfo, 0)
+	truncated := false
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// root 不存在 = 尚无任何制品，不是错误（与"空桶"同义）。
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".part") {
+			return nil
+		}
+		rel, rerr := filepath.Rel(l.root, path)
+		if rerr != nil {
+			return rerr
+		}
+		if limit > 0 && len(out) == limit {
+			truncated = true
+			return filepath.SkipAll
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return ierr
+		}
+		out = append(out, ObjectInfo{Key: filepath.ToSlash(rel), Size: info.Size()})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, false, walkErr
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, truncated, nil
+}
+
+// Enumerator is implemented by this driver; the reconciliation job asserts for
+// it at wiring time.
+var _ Enumerator = (*Local)(nil)
 
 // resolve maps a request key to a path inside root, rejecting traversal.
 func (l *Local) resolve(key string) (string, error) {

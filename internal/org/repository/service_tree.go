@@ -23,3 +23,15 @@ func (r *ServiceTreeRepository) GetByOrgID(orgID uuid.UUID) (*models.ServiceTree
 	}
 	return &st, nil
 }
+
+// ServiceTreeIDByOrg 只回树 id，满足 catalog 侧声明的窄接口
+// `service.ServiceTreeLookup`（`GET /orgs/:id/services`，附 A N-9）。
+// 为什么不直接让对方用 GetByOrgID：catalog 不需要、也不该依赖 org 的模型类型，
+// 两边要共享的事实只有"组织 → 树 id"这一条映射。
+func (r *ServiceTreeRepository) ServiceTreeIDByOrg(orgID uuid.UUID) (uuid.UUID, error) {
+	st, err := r.GetByOrgID(orgID)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return st.ID, nil
+}

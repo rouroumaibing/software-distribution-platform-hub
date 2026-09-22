@@ -14,38 +14,66 @@ func setupRouter(deps *Dependencies) *gin.Engine {
 	// 2. 验证通过后,解析出对应的本地 User(首次登录自动创建)
 	api.Use(middleware.UserContext(deps.UserService))
 
-	// 3. 不需要按组件校验权限的路由(比如 Org/Cluster 管理)直接挂
+	// 3. 不需要按组件校验权限的路由(比如 Org/Target 管理)直接挂
 	deps.OrgHandler.RegisterRoutes(api)
-	deps.ClusterHandler.RegisterRoutes(api)
+	deps.TargetHandler.RegisterRoutes(api)
 
 	// 4. 需要按组件校验权限的路由,单独在路由组上加 RequirePermission
+	//
+	// Requirement 里的 Resource 说明**路径里那个 id 是什么资源**:
+	//   ResourceComponent            —— 参数本身就是 component id,直接查绑定;
+	//   ResourcePipeline / ResourceRun
+	//                                —— 参数是流水线 / 运行**自己的** id,必须先由
+	//                                  locator 反查它所属的 component,再拿那个
+	//                                  component 查绑定。
+	//
+	// 漏掉反查的后果不是"变松"而是"全拒":拿 pipeline id 去查 component 绑定
+	// 永远查不到,一旦开了鉴权这些路由**恒 403**。
+	// 规范与对账见 ACCOUNT-PERMISSION-MODEL.md §10 第 14 行。
+	locator := permissionsvc.NewComponentLocator(deps.PipelineRepo, deps.PipelineRunRepo)
+	guarded := func(res middleware.Resource, param, action string, h gin.HandlerFunc) []gin.HandlerFunc {
+		return []gin.HandlerFunc{middleware.RequirePermission(deps.BindingService, locator, middleware.Requirement{
+			Resource:   res,
+			Param:      param,
+			Permission: action,
+		}), h}
+	}
+
 	componentScoped := api.Group("/")
 	{
-		// 查看流水线只需要 view 权限
+		// :id 就是 component id —— 直接查该组件的绑定
 		componentScoped.GET(
-			"/components/:componentId/pipelines",
-			middleware.RequirePermission(deps.BindingService, "componentId", models.PermissionView),
-			deps.PipelineHandler.ListByComponent,
+			"/components/:id/pipelines",
+			guarded(middleware.ResourceComponent, "id", permmodels.ActionPipelineRead, deps.PipelineHandler.ListByComponent)...,
 		)
 
-		// 触发发布需要 edit 权限,生产环境部署在 service 层再做一次强制审批校验
+		// :id 是 **pipeline id** —— 先反查所属 component 再查绑定;
+		// 生产环境部署另外在 service 层做一次强制审批校验
 		componentScoped.POST(
-			"/pipelines/:pipelineId/runs",
-			middleware.RequirePermission(deps.BindingService, "componentId", models.PermissionEdit),
-			deps.PipelineRunHandler.Trigger,
+			"/pipelines/:id/runs",
+			guarded(middleware.ResourcePipeline, "id", permmodels.ActionPipelineTrigger, deps.PipelineRunHandler.Trigger)...,
 		)
 
-		// 删除组件需要 delete 权限
-		componentScoped.DELETE(
-			"/components/:id",
-			middleware.RequirePermission(deps.BindingService, "id", models.PermissionDelete),
-			deps.ComponentHandler.Delete,
+		// :id 是 **run id** —— 两跳:run → pipeline → component
+		componentScoped.POST(
+			"/runs/:id/redispatch",
+			guarded(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, deps.PipelineRunHandler.Redispatch)...,
 		)
 	}
 
 	return r
 }
 ```
+
+## 被拒时回什么码(便于排查,不要混用)
+
+| 码 | 含义 |
+| --- | --- |
+| `401` | 上下文里没有已认证身份(校验失败,或中间件顺序错了) |
+| `400` | 路径参数不是合法 UUID |
+| `404` | 路径里的 pipeline / run **不存在**(反查不到) |
+| `403` | 身份有效,但**确实没有**该组件上的这个权限 |
+| `500` | 反查或绑定查询本身失败(库连不上等)——**故障不是拒绝**,不要报成 403 |
 
 ## Keycloak 侧需要提前配置好的东西
 

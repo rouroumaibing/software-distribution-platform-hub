@@ -14,17 +14,25 @@ import (
 // PipelineTaskTemplate is the definition-level counterpart of
 // runnerapi.PipelineTaskSpec.
 //
-// It embeds common.BaseNoSoftDelete so id / created_at / updated_at are all
-// mapped. Before this, the struct carried its own ID only, so the two
-// timestamp columns existed in the table (0001_init_schema.sql) but were
-// invisible to the API. BaseNoSoftDelete (not Base) because stages/templates
-// have no deleted_at column — they are hard-deleted, unlike their soft-deleted
-// parent pipeline.
+// It embeds common.Base (soft delete) rather than BaseNoSoftDelete: once
+// PipelineStage moved to soft delete (DELETE-CONTRACT §6.6-3 决策 3), a
+// hard-deleted template under a soft-deleted stage would be the same
+// "half state" the contract rejects. The DDL's
+// `stage_id ... on delete cascade` never fires for soft deletes, so
+// StageService soft-deletes a stage's templates explicitly.
+//
+// Before this, the struct also carried no created_at / updated_at mapping;
+// BaseNoSoftDelete was added on 2026-09-16 to expose them, and Base keeps
+// both plus deleted_at.
 type PipelineTaskTemplate struct {
-	common.BaseNoSoftDelete
-	StageID uuid.UUID `gorm:"type:uuid;not null;index" json:"stageId"`
+	common.Base
+	// 与 pipeline_stages / pipelines 同手法：唯一性只作用于未软删的行，否则
+	// 软删一个模板后同 stage 下再建同名模板会撞 0001 里的
+	// `unique (stage_id, name)` → 500。索引由 StageID + Name **两个字段共同
+	// 声明**（列序 = struct 字段序），DDL 侧同义声明见 migrations/0009。
+	StageID uuid.UUID `gorm:"type:uuid;not null;index;uniqueIndex:idx_task_templates_stage_name_active,where:deleted_at IS NULL" json:"stageId"`
 
-	Name         string                     `gorm:"size:128;not null" json:"name"`
+	Name         string                     `gorm:"size:128;not null;uniqueIndex:idx_task_templates_stage_name_active,where:deleted_at IS NULL" json:"name"`
 	Type         runnerapi.PipelineTaskType `gorm:"size:32;not null" json:"type"` // Build/Release/Approval
 	DisplayOrder int                        `gorm:"not null;default:0" json:"displayOrder"`
 

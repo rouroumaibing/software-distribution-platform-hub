@@ -69,9 +69,9 @@ create table components (
 create index idx_components_service on components(service_id) where deleted_at is null;
 
 -- ---------------------------------------------------------------------
--- 5. 集群注册(前面 Hub-Spoke 架构讨论过的 cluster registry)
+-- 5. 接入目标注册表(前面 Hub-Spoke 架构讨论过的 target registry)
 -- ---------------------------------------------------------------------
-create table clusters (
+create table targets (
     id             uuid primary key default gen_random_uuid(),
     name           varchar(128) not null unique,
     vendor         varchar(64)  not null, -- aliyun / tencent / aws / self-hosted ...
@@ -84,21 +84,21 @@ create table clusters (
 );
 
 -- ---------------------------------------------------------------------
--- 6. 环境(挂在组件下,如 beta/alpha/gamma/prod,绑定到具体集群+命名空间)
+-- 6. 环境(挂在组件下,如 beta/alpha/gamma/prod,绑定到具体目标+命名空间)
 -- ---------------------------------------------------------------------
 create table environments (
     id            uuid primary key default gen_random_uuid(),
     component_id  uuid not null references components(id) on delete cascade,
     key           varchar(64)  not null, -- beta / alpha / gamma / prod
     name          varchar(128) not null,
-    cluster_id    uuid not null references clusters(id),
+    target_id     uuid not null references targets(id),
     namespace     varchar(128) not null, -- 约定: {org}-{component}-{env}
     created_at    timestamptz  not null default now(),
     updated_at    timestamptz  not null default now(),
     unique (component_id, key)
 );
 create index idx_environments_component on environments(component_id);
-create index idx_environments_cluster on environments(cluster_id);
+create index idx_environments_target on environments(target_id);
 
 -- ---------------------------------------------------------------------
 -- 7. 流水线(定义级,如"构建流水线"、"发布流水线")
@@ -181,7 +181,7 @@ create index idx_task_templates_environment on pipeline_task_templates(environme
 create table pipeline_runs (
     id                  uuid primary key default gen_random_uuid(),
     pipeline_id         uuid not null references pipelines(id),
-    cluster_id          uuid not null references clusters(id),
+    target_id           uuid not null references targets(id),
     -- 对应 K8s 里的 PipelineRun CR 名称,近期数据可据此反查实时状态
     cr_name             varchar(256) not null,
     cr_namespace        varchar(128) not null,
@@ -202,7 +202,7 @@ create table pipeline_runs (
 );
 create index idx_pipeline_runs_pipeline on pipeline_runs(pipeline_id, created_at desc);
 create index idx_pipeline_runs_phase on pipeline_runs(phase);
-create unique index idx_pipeline_runs_cr on pipeline_runs(cluster_id, cr_namespace, cr_name);
+create unique index idx_pipeline_runs_cr on pipeline_runs(target_id, cr_namespace, cr_name);
 
 -- ---------------------------------------------------------------------
 -- 11. 任务运行记录(DAG 中每个子任务节点的执行历史)

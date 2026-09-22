@@ -22,7 +22,7 @@
 | 00_orgs.sql | orgs, service_trees | 总览、平台管理（组织） |
 | 01_services.sql | services | 服务树（业务分组层） |
 | 02_components.sql | components | 服务树、组件详情-概览 |
-| 03_clusters.sql | clusters | 平台管理-集群 |
+| 03_targets.sql | targets | 接入管理 |
 | 04_environments.sql | environments | 组件详情-环境 |
 | 05_pipelines.sql | pipelines, pipeline_stages, pipeline_task_templates, pipeline_versions | 组件详情-流水线、流水线编辑器 |
 | 06_permissions.sql | users, roles, component_role_bindings | 平台管理-用户与平台权限、组件详情-权限 |
@@ -36,7 +36,7 @@
 cmd/hub/conf/import.sh
 
 # 方式二：手动单文件
-kubectl -n sdp-system exec -i deploy/postgres -- \
+kubectl -n sdp-workflow exec -i deploy/postgres -- \
   psql -v ON_ERROR_STOP=1 -U sdp -d sdp < cmd/hub/conf/00_orgs.sql
 ```
 
@@ -46,7 +46,7 @@ hub 的读时自举默认组织（Default/default）与本种子数据互不影�
 ## ID 前缀约定（确定性 UUID）
 
 `a1`=orgs `a2`=service_trees `b1`=services `b2`=components
-`c1`=clusters `c2`=environments `d1`=pipelines `d2`=pipeline_stages
+`c1`=targets `c2`=environments `d1`=pipelines `d2`=pipeline_stages
 `d3`=pipeline_task_templates `d4`=pipeline_versions
 `e1`=users `e2`=roles `e3`=component_role_bindings
 `f1`=component_configs `f2`=pipeline_runs `f3`=task_runs `f4`=artifacts
@@ -58,11 +58,11 @@ hub 的读时自举默认组织（Default/default）与本种子数据互不影�
 种子数据无外键约束（GORM 未建 FK），按 08→00 倒序 TRUNCATE 即可：
 
 ```bash
-kubectl -n sdp-system exec -it deploy/postgres -- psql -U sdp -d sdp \
+kubectl -n sdp-workflow exec -it deploy/postgres -- psql -U sdp -d sdp \
   -c "TRUNCATE artifacts, task_runs, pipeline_runs, component_configs,
       component_role_bindings, roles, users, pipeline_versions,
       pipeline_task_templates, pipeline_stages, pipelines,
-      environments, clusters, components, services,
+      environments, targets, components, services,
       service_trees, orgs CASCADE;"
 ```
 

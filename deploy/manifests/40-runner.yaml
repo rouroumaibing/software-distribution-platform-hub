@@ -4,7 +4,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: runner
-  namespace: sdp-system
+  namespace: sdp-workflow
   labels:
     app: runner
 spec:
@@ -24,8 +24,8 @@ spec:
           imagePullPolicy: Always
           env:
             - name: HUB_GATEWAY_URL
-              value: "ws://hub.sdp-system.svc:8080/gateway/ws"
-            - name: CLUSTER_NAME
+              value: "ws://hub.sdp-workflow.svc:8080/gateway/ws"
+            - name: TARGET_NAME
               value: "local-dev"
-            - name: CLUSTER_AUTH_TOKEN
+            - name: TARGET_AUTH_TOKEN
               value: "sdp-dev-token-2026"

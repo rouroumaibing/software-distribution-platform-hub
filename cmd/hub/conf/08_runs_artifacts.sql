@@ -13,36 +13,36 @@
 -- ============================================================
 
 -- ---------- order-service 构建流水线的运行历史 ----------
-INSERT INTO pipeline_runs (id, pipeline_id, cluster_id, cr_name, cr_namespace, commit_sha, params, pipeline_version, phase, triggered_by, start_time, completion_time, message, created_at, updated_at) VALUES
+INSERT INTO pipeline_runs (id, pipeline_id, target_id, cr_name, cr_namespace, commit_sha, params, pipeline_version, phase, triggered_by, start_time, completion_time, message, created_at, updated_at) VALUES
 -- 成功
 ('f2000000-0000-0000-0000-000000000001', 'd1000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000001',
- 'pipelinerun-order-0001', 'sdp-system', '3f1c9ab12de4', '{}'::jsonb, 3, 'Succeeded', 'admin',
+ 'pipelinerun-order-0001', 'sdp-workflow', '3f1c9ab12de4', '{}'::jsonb, 3, 'Succeeded', 'admin',
  now() - interval '6 days' + interval '10 hours', now() - interval '6 days' + interval '10 hours' + interval '8 minutes', '',
  now() - interval '6 days' + interval '10 hours', now() - interval '6 days' + interval '10 hours' + interval '8 minutes'),
 -- 失败(单测挂)
 ('f2000000-0000-0000-0000-000000000002', 'd1000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000001',
- 'pipelinerun-order-0002', 'sdp-system', 'a7b2ee09f3c1', '{}'::jsonb, 3, 'Failed', 'zhang.san',
+ 'pipelinerun-order-0002', 'sdp-workflow', 'a7b2ee09f3c1', '{}'::jsonb, 3, 'Failed', 'zhang.san',
  now() - interval '4 days' + interval '14 hours', now() - interval '4 days' + interval '14 hours' + interval '3 minutes', 'unit test failed: TestCreateOrder',
  now() - interval '4 days' + interval '14 hours', now() - interval '4 days' + interval '14 hours' + interval '3 minutes'),
 -- 运行中
 ('f2000000-0000-0000-0000-000000000003', 'd1000000-0000-0000-0000-000000000001', 'c1000000-0000-0000-0000-000000000001',
- 'pipelinerun-order-0003', 'sdp-system', '9d0c4fa77e21', '{}'::jsonb, 3, 'Running', 'admin',
+ 'pipelinerun-order-0003', 'sdp-workflow', '9d0c4fa77e21', '{}'::jsonb, 3, 'Running', 'admin',
  now() - interval '25 minutes', NULL, '',
  now() - interval '25 minutes', now() - interval '25 minutes')
 ON CONFLICT (id) DO NOTHING;
 
 -- ---------- order-service 发布流水线(等待审批, 发布页演示) ----------
-INSERT INTO pipeline_runs (id, pipeline_id, cluster_id, cr_name, cr_namespace, commit_sha, params, pipeline_version, phase, triggered_by, start_time, completion_time, message, created_at, updated_at) VALUES
+INSERT INTO pipeline_runs (id, pipeline_id, target_id, cr_name, cr_namespace, commit_sha, params, pipeline_version, phase, triggered_by, start_time, completion_time, message, created_at, updated_at) VALUES
 ('f2000000-0000-0000-0000-000000000004', 'd1000000-0000-0000-0000-000000000002', 'c1000000-0000-0000-0000-000000000003',
- 'pipelinerun-order-rel-0001', 'sdp-system', '3f1c9ab12de4', '{"environment":"prod"}'::jsonb, 2, 'WaitingApproval', 'admin',
+ 'pipelinerun-order-rel-0001', 'sdp-workflow', '3f1c9ab12de4', '{"environment":"prod"}'::jsonb, 2, 'WaitingApproval', 'admin',
  now() - interval '2 hours', NULL, '等待发布审批(approvers: admin)',
  now() - interval '2 hours', now() - interval '2 hours')
 ON CONFLICT (id) DO NOTHING;
 
 -- ---------- api-gateway 构建流水线(成功) ----------
-INSERT INTO pipeline_runs (id, pipeline_id, cluster_id, cr_name, cr_namespace, commit_sha, params, pipeline_version, phase, triggered_by, start_time, completion_time, message, created_at, updated_at) VALUES
+INSERT INTO pipeline_runs (id, pipeline_id, target_id, cr_name, cr_namespace, commit_sha, params, pipeline_version, phase, triggered_by, start_time, completion_time, message, created_at, updated_at) VALUES
 ('f2000000-0000-0000-0000-000000000005', 'd1000000-0000-0000-0000-000000000003', 'c1000000-0000-0000-0000-000000000001',
- 'pipelinerun-gateway-0001', 'sdp-system', 'c88d10b6aa05', '{}'::jsonb, 1, 'Succeeded', 'li.si',
+ 'pipelinerun-gateway-0001', 'sdp-workflow', 'c88d10b6aa05', '{}'::jsonb, 1, 'Succeeded', 'li.si',
  now() - interval '3 days' + interval '9 hours', now() - interval '3 days' + interval '9 hours' + interval '6 minutes', '',
  now() - interval '3 days' + interval '9 hours', now() - interval '3 days' + interval '9 hours' + interval '6 minutes')
 ON CONFLICT (id) DO NOTHING;

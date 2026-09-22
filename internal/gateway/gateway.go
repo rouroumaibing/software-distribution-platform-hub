@@ -1,7 +1,7 @@
 // Package gateway implements the Hub side of the Hub-Spoke long connection:
 // a WebSocket server that accepts Runner Agents, authenticates them, tracks
-// which cluster each connection belongs to, dispatches PipelineRunSpecs down
-// to the right cluster, and routes status / log / heartbeat messages back up
+// which target each connection belongs to, dispatches PipelineRunSpecs down
+// to the right target, and routes status / log / heartbeat messages back up
 // into the hub (e.g. to keep pipeline_runs / task_runs history in sync).
 package gateway
 
@@ -19,31 +19,31 @@ import (
 
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
-	"github.com/rouroumaibing/software-distribution-platform-hub/internal/cluster/service"
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/target/service"
 )
 
-// ErrNoRunner is returned by Dispatch when the target cluster has no live
+// ErrNoRunner is returned by Dispatch when the target has no live
 // connection, so the caller can surface a clear "no runner connected" error.
-var ErrNoRunner = errors.New("gateway: no runner connected for cluster")
+var ErrNoRunner = errors.New("gateway: no runner connected for target")
 
 // StatusHandler is invoked for every status_update relayed from a Runner.
-// clusterID is the resolved hub-side UUID; payload is the decoded
+// targetID is the resolved hub-side UUID; payload is the decoded
 // StatusUpdatePayload.
-type StatusHandler func(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.StatusUpdatePayload)
+type StatusHandler func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.StatusUpdatePayload)
 
 // LogHandler is invoked for every log_chunk relayed from a Runner.
 type LogHandler func(ctx context.Context, payload *runnerapi.LogChunkPayload)
 
 // ConnectHandler is invoked once a Runner has registered and been marked
-// online, so the caller can redeliver any work enqueued while the cluster was
+// online, so the caller can redeliver any work enqueued while the target was
 // offline (e.g. pending dispatch jobs).
-type ConnectHandler func(ctx context.Context, clusterID uuid.UUID)
+type ConnectHandler func(ctx context.Context, targetID uuid.UUID)
 
 // HubServer accepts Runner WebSocket connections and multiplexes dispatch /
-// inbound messages across them, keyed by cluster UUID.
+// inbound messages across them, keyed by target UUID.
 type HubServer struct {
-	clusterSvc   *service.ClusterService
+	targetSvc    *service.TargetService
 	gatewayToken string
 
 	upgrader websocket.Upgrader
@@ -57,9 +57,9 @@ type HubServer struct {
 
 // New constructs a HubServer. gatewayToken, when non-empty, must match the
 // Runner's bearer token; an empty token accepts any connection (dev only).
-func New(clusterSvc *service.ClusterService, gatewayToken string) *HubServer {
+func New(targetSvc *service.TargetService, gatewayToken string) *HubServer {
 	return &HubServer{
-		clusterSvc:   clusterSvc,
+		targetSvc:    targetSvc,
 		gatewayToken: gatewayToken,
 		upgrader: websocket.Upgrader{
 			// Runners dial from inside managed clusters; restricting origin
@@ -81,7 +81,7 @@ func (h *HubServer) SetLogHandler(fn LogHandler) { h.logH = fn }
 func (h *HubServer) SetConnectHandler(fn ConnectHandler) { h.connectH = fn }
 
 // ServeWS is the gin handler mounted at the gateway path. It authenticates
-// the Runner, registers the connection, marks the cluster online, then reads
+// the Runner, registers the connection, marks the target online, then reads
 // messages until the connection drops.
 func (h *HubServer) ServeWS(c *gin.Context) {
 	token := extractBearer(c.GetHeader("Authorization"))
@@ -89,65 +89,65 @@ func (h *HubServer) ServeWS(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid gateway token"})
 		return
 	}
-	clusterName := c.GetHeader("X-Cluster-Name")
-	if clusterName == "" {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing X-Cluster-Name"})
+	targetName := c.GetHeader("X-Target-Name")
+	if targetName == "" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing X-Target-Name"})
 		return
 	}
-	cl, err := h.clusterSvc.GetByName(clusterName)
+	tg, err := h.targetSvc.GetByName(targetName)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown cluster"})
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown target"})
 		return
 	}
 
 	ws, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		applog.Infof("gateway: upgrade failed for cluster %s: %v", clusterName, err)
+		applog.Infof("gateway: upgrade failed for target %s: %v", targetName, err)
 		return
 	}
 
-	h.register(cl.ID, ws)
+	h.register(tg.ID, ws)
 	if h.connectH != nil {
-		h.connectH(c.Request.Context(), cl.ID)
+		h.connectH(c.Request.Context(), tg.ID)
 	}
-	defer h.unregister(cl.ID, ws)
+	defer h.unregister(tg.ID, ws)
 
-	if err := h.clusterSvc.Heartbeat(cl.ID, true); err != nil {
-		applog.Infof("gateway: mark online failed for cluster %s: %v", clusterName, err)
+	if err := h.targetSvc.Heartbeat(tg.ID, true); err != nil {
+		applog.Infof("gateway: mark online failed for target %s: %v", targetName, err)
 	}
 
-	applog.Infof("gateway: cluster %s connected", clusterName)
-	h.readLoop(c.Request.Context(), cl.ID, ws)
-	applog.Infof("gateway: cluster %s disconnected", clusterName)
+	applog.Infof("gateway: target %s connected", targetName)
+	h.readLoop(c.Request.Context(), tg.ID, ws)
+	applog.Infof("gateway: target %s disconnected", targetName)
 }
 
-func (h *HubServer) register(clusterID uuid.UUID, ws *websocket.Conn) {
+func (h *HubServer) register(targetID uuid.UUID, ws *websocket.Conn) {
 	h.mu.Lock()
-	h.conns[clusterID] = ws
+	h.conns[targetID] = ws
 	h.mu.Unlock()
 }
 
-// unregister 移除连接。同一集群的新旧连接在滚动重启时会短暂并存：
+// unregister 移除连接。同一目标的新旧连接在滚动重启时会短暂并存：
 // 旧连接的 readLoop 退出时绝不能把新连接的注册项一并删掉，否则会出现
 // "心跳还在收、但 Dispatch 查不到连接"（或把派发写进已死的旧连接）。
 // 因此这里只在自己仍是注册项时才删除。
-func (h *HubServer) unregister(clusterID uuid.UUID, ws *websocket.Conn) {
+func (h *HubServer) unregister(targetID uuid.UUID, ws *websocket.Conn) {
 	h.mu.Lock()
-	owned := h.conns[clusterID] == ws
+	owned := h.conns[targetID] == ws
 	if owned {
-		delete(h.conns, clusterID)
+		delete(h.conns, targetID)
 	}
 	h.mu.Unlock()
 	if owned {
-		_ = h.clusterSvc.Heartbeat(clusterID, false)
+		_ = h.targetSvc.Heartbeat(targetID, false)
 	}
 }
 
-// Dispatch sends an ApplyPipelineRunPayload to the Runner managing clusterID.
-// It returns ErrNoRunner if that cluster has no live connection.
-func (h *HubServer) Dispatch(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.ApplyPipelineRunPayload) error {
+// Dispatch sends an ApplyPipelineRunPayload to the Runner managing targetID.
+// It returns ErrNoRunner if that target has no live connection.
+func (h *HubServer) Dispatch(ctx context.Context, targetID uuid.UUID, payload *runnerapi.ApplyPipelineRunPayload) error {
 	h.mu.RLock()
-	ws, ok := h.conns[clusterID]
+	ws, ok := h.conns[targetID]
 	h.mu.RUnlock()
 	if !ok {
 		return ErrNoRunner
@@ -160,13 +160,13 @@ func (h *HubServer) Dispatch(ctx context.Context, clusterID uuid.UUID, payload *
 	return ws.WriteJSON(msg)
 }
 
-// Approve sends an ApproveTaskPayload to the Runner managing clusterID,
+// Approve sends an ApproveTaskPayload to the Runner managing targetID,
 // relaying an approver's decision for a paused Approval task. It returns
-// ErrNoRunner if that cluster has no live connection, so the caller can
-// surface a clear "cluster offline, cannot deliver decision" error.
-func (h *HubServer) Approve(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.ApproveTaskPayload) error {
+// ErrNoRunner if that target has no live connection, so the caller can
+// surface a clear "target offline, cannot deliver decision" error.
+func (h *HubServer) Approve(ctx context.Context, targetID uuid.UUID, payload *runnerapi.ApproveTaskPayload) error {
 	h.mu.RLock()
-	ws, ok := h.conns[clusterID]
+	ws, ok := h.conns[targetID]
 	h.mu.RUnlock()
 	if !ok {
 		return ErrNoRunner
@@ -180,12 +180,12 @@ func (h *HubServer) Approve(ctx context.Context, clusterID uuid.UUID, payload *r
 }
 
 // RolloutControl sends a RolloutControlPayload to the Runner managing
-// clusterID, relaying an operator's pause/promote/rollback command for a
-// Release task's Rollout. It returns ErrNoRunner if that cluster has no live
-// connection, so the caller can surface a clear "cluster offline" error.
-func (h *HubServer) RolloutControl(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.RolloutControlPayload) error {
+// targetID, relaying an operator's pause/promote/rollback command for a
+// Release task's Rollout. It returns ErrNoRunner if that target has no live
+// connection, so the caller can surface a clear "target offline" error.
+func (h *HubServer) RolloutControl(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RolloutControlPayload) error {
 	h.mu.RLock()
-	ws, ok := h.conns[clusterID]
+	ws, ok := h.conns[targetID]
 	h.mu.RUnlock()
 	if !ok {
 		return ErrNoRunner
@@ -198,17 +198,17 @@ func (h *HubServer) RolloutControl(ctx context.Context, clusterID uuid.UUID, pay
 	return ws.WriteJSON(msg)
 }
 
-func (h *HubServer) readLoop(ctx context.Context, clusterID uuid.UUID, ws *websocket.Conn) {
+func (h *HubServer) readLoop(ctx context.Context, targetID uuid.UUID, ws *websocket.Conn) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
 			// Normal on clean disconnect; log at debug level in production.
-			applog.Infof("gateway: cluster %s read error: %v", clusterID, err)
+			applog.Infof("gateway: target %s read error: %v", targetID, err)
 			return
 		}
 		var msg runnerapi.Message
 		if err := json.Unmarshal(data, &msg); err != nil {
-			applog.Infof("gateway: cluster %s bad frame: %v", clusterID, err)
+			applog.Infof("gateway: target %s bad frame: %v", targetID, err)
 			continue
 		}
 		switch msg.Type {
@@ -219,7 +219,7 @@ func (h *HubServer) readLoop(ctx context.Context, clusterID uuid.UUID, ws *webso
 				continue
 			}
 			if h.statusH != nil {
-				h.statusH(ctx, clusterID, &p)
+				h.statusH(ctx, targetID, &p)
 			}
 		case runnerapi.MessageLogChunk:
 			var p runnerapi.LogChunkPayload
@@ -231,9 +231,9 @@ func (h *HubServer) readLoop(ctx context.Context, clusterID uuid.UUID, ws *webso
 				h.logH(ctx, &p)
 			}
 		case runnerapi.MessageHeartbeat:
-			_ = h.clusterSvc.Heartbeat(clusterID, true)
+			_ = h.targetSvc.Heartbeat(targetID, true)
 		default:
-			applog.Infof("gateway: cluster %s unhandled message type %q", clusterID, msg.Type)
+			applog.Infof("gateway: target %s unhandled message type %q", targetID, msg.Type)
 		}
 	}
 }

@@ -12,10 +12,10 @@ import (
 
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
-	clustermodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/cluster/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
+	targetmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/target/models"
 )
 
 // ---- in-memory fakes for the repository interfaces (no Postgres needed) ----
@@ -59,7 +59,7 @@ func (f *fakePipelineRunStore) Update(r *models.PipelineRun) error {
 	return nil
 }
 
-func (f *fakePipelineRunStore) GetByCRNameCluster(crName string, clusterID uuid.UUID) (*models.PipelineRun, error) {
+func (f *fakePipelineRunStore) GetByCRNameTarget(crName string, targetID uuid.UUID) (*models.PipelineRun, error) {
 	return nil, gorm.ErrRecordNotFound
 }
 
@@ -67,7 +67,7 @@ func (f *fakePipelineRunStore) FindByPipelineID(pipelineID uuid.UUID, p common.P
 	return nil, 0, nil
 }
 
-func (f *fakePipelineRunStore) FindAll(p common.Pagination, phase string) ([]models.PipelineRun, int64, error) {
+func (f *fakePipelineRunStore) FindAll(p common.Pagination, phase string, componentID uuid.UUID) ([]models.PipelineRun, int64, error) {
 	return nil, 0, nil
 }
 
@@ -109,12 +109,15 @@ func (fakeTaskTemplateStore) ListByStageID(uuid.UUID) ([]pipelinemodels.Pipeline
 	}}, nil
 }
 
-type fakeClusterStore struct{ status string }
+type fakeTargetStore struct{ status string }
 
-func (f fakeClusterStore) Get(id uuid.UUID) (*clustermodels.Cluster, error) {
-	return &clustermodels.Cluster{Status: f.status}, nil
+func (f fakeTargetStore) Get(id uuid.UUID) (*targetmodels.Target, error) {
+	// 真实 repo 会把整行（含主键）读回来；fake 必须同样回填 ID，否则
+	// selectTarget 会返回零值 UUID，让"已解析出的 target"在下游变成空 —— 生产强
+	// 审批（B-11）按 target 判生产环境，就会因为这个假阴性被静默跳过。
+	return &targetmodels.Target{ID: id, Status: f.status}, nil
 }
-func (f fakeClusterStore) List(p common.Pagination) ([]clustermodels.Cluster, int64, error) {
+func (f fakeTargetStore) List(p common.Pagination) ([]targetmodels.Target, int64, error) {
 	return nil, 0, nil
 }
 
@@ -127,24 +130,24 @@ func newFullTestService(disp Dispatcher, store DispatchJobStore) *PipelineRunSer
 		pipelineRepo:     fakePipelineDefStore{version: 1},
 		stageRepo:        fakeStageStore{},
 		taskTemplateRepo: fakeTaskTemplateStore{},
-		clusterSvc:       fakeClusterStore{status: clustermodels.ClusterStatusOnline},
+		targetSvc:        fakeTargetStore{status: targetmodels.TargetStatusOnline},
 		dispatcher:       disp,
 		dispatchRepo:     store,
 		sweepInterval:    20 * time.Millisecond,
 	}
 }
 
-// TestTriggerFanoutCreatesOneRunPerCluster: a trigger with TargetClusters fans
-// out to one independent run per environment, each delivered to its cluster.
-func TestTriggerFanoutCreatesOneRunPerCluster(t *testing.T) {
+// TestTriggerFanoutCreatesOneRunPerTarget: a trigger with TargetIDs fans
+// out to one independent run per environment, each delivered to its target.
+func TestTriggerFanoutCreatesOneRunPerTarget(t *testing.T) {
 	store := newFakeDispatchStore()
 	disp := &fakeDispatcher{fail: false}
 	svc := newFullTestService(disp, store)
 
 	c1, c2 := uuid.New(), uuid.New()
 	runs, err := svc.Trigger(uuid.New(), &models.TriggerRequest{
-		TargetClusters: []uuid.UUID{c1, c2},
-		TriggeredBy:    "tester",
+		TargetIDs:   []uuid.UUID{c1, c2},
+		TriggeredBy: "tester",
 	})
 	if err != nil {
 		t.Fatalf("fanout trigger: %v", err)
@@ -157,14 +160,14 @@ func TestTriggerFanoutCreatesOneRunPerCluster(t *testing.T) {
 		t.Fatalf("expected 2 dispatch jobs, got %d", len(jobs))
 	}
 	if disp.count() != 2 {
-		t.Fatalf("expected 2 dispatches (one per cluster), got %d", disp.count())
+		t.Fatalf("expected 2 dispatches (one per target), got %d", disp.count())
 	}
 	seen := map[uuid.UUID]bool{}
 	for _, r := range runs {
-		seen[r.ClusterID] = true
+		seen[r.TargetID] = true
 	}
 	if !seen[c1] || !seen[c2] {
-		t.Fatalf("runs not assigned to both target clusters: %v", runs)
+		t.Fatalf("runs not assigned to both targets: %v", runs)
 	}
 	for _, j := range jobs {
 		if j.State != models.DispatchJobDispatched {
@@ -173,18 +176,18 @@ func TestTriggerFanoutCreatesOneRunPerCluster(t *testing.T) {
 	}
 }
 
-// TestTriggerFanoutOfflineClusterDoesNotFail: with the Runner offline, a
+// TestTriggerFanoutOfflineTargetDoesNotFail: with the Runner offline, a
 // fan-out trigger must NOT error — each run stays Pending and its job is
 // queued for later redelivery (durable dispatch).
-func TestTriggerFanoutOfflineClusterDoesNotFail(t *testing.T) {
+func TestTriggerFanoutOfflineTargetDoesNotFail(t *testing.T) {
 	store := newFakeDispatchStore()
 	disp := &fakeDispatcher{fail: true} // Runner down
 	svc := newFullTestService(disp, store)
 
 	c1, c2 := uuid.New(), uuid.New()
-	runs, err := svc.Trigger(uuid.New(), &models.TriggerRequest{TargetClusters: []uuid.UUID{c1, c2}})
+	runs, err := svc.Trigger(uuid.New(), &models.TriggerRequest{TargetIDs: []uuid.UUID{c1, c2}})
 	if err != nil {
-		t.Fatalf("fanout with offline clusters must not fail: %v", err)
+		t.Fatalf("fanout with offline targets must not fail: %v", err)
 	}
 	if len(runs) != 2 {
 		t.Fatalf("expected 2 runs, got %d", len(runs))
@@ -216,13 +219,13 @@ func TestRedispatchDeadJobRetriesAndDelivers(t *testing.T) {
 	disp := &fakeDispatcher{fail: false}
 	svc := newFullTestService(disp, store)
 
-	runID, clusterID := uuid.New(), uuid.New()
-	if err := svc.repo.Create(&models.PipelineRun{ID: runID, ClusterID: clusterID, Phase: runnerapi.PipelineRunFailed}); err != nil {
+	runID, targetID := uuid.New(), uuid.New()
+	if err := svc.repo.Create(&models.PipelineRun{ID: runID, TargetID: targetID, Phase: runnerapi.PipelineRunFailed}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Create(&models.DispatchJob{
 		PipelineRunID: runID,
-		ClusterID:     clusterID,
+		TargetID:      targetID,
 		Payload:       mustMarshal(t, samplePayload()),
 		State:         models.DispatchJobDead,
 		Attempts:      MaxDispatchAttempts,
@@ -256,13 +259,13 @@ func TestRedispatchOfflineStaysPending(t *testing.T) {
 	disp := &fakeDispatcher{fail: true}
 	svc := newFullTestService(disp, store)
 
-	runID, clusterID := uuid.New(), uuid.New()
-	if err := svc.repo.Create(&models.PipelineRun{ID: runID, ClusterID: clusterID, Phase: runnerapi.PipelineRunFailed}); err != nil {
+	runID, targetID := uuid.New(), uuid.New()
+	if err := svc.repo.Create(&models.PipelineRun{ID: runID, TargetID: targetID, Phase: runnerapi.PipelineRunFailed}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Create(&models.DispatchJob{
 		PipelineRunID: runID,
-		ClusterID:     clusterID,
+		TargetID:      targetID,
 		Payload:       mustMarshal(t, samplePayload()),
 		State:         models.DispatchJobFailed,
 		Attempts:      3,

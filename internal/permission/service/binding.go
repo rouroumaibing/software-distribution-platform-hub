@@ -17,6 +17,12 @@ type BindingService struct {
 	platformRoleRepo  *repository.PlatformRoleRepository
 	platformBindRepo  *repository.PlatformRoleBindingRepository
 	componentRepo     *componentrepo.ComponentRepository
+	// roleActions is the reviewable role→action registry
+	// (ACCOUNT-PERMISSION-MODEL §5.1③). Optional (nil-safe): when wired, the
+	// effective action set is the union of each role's `actions` JSON and its
+	// registered mappings, so the registry is a consulted source rather than a
+	// decorative mirror.
+	roleActions RoleActionLookup
 }
 
 func NewBindingService(
@@ -26,6 +32,7 @@ func NewBindingService(
 	platformRoleRepo *repository.PlatformRoleRepository,
 	platformBindRepo *repository.PlatformRoleBindingRepository,
 	componentRepo *componentrepo.ComponentRepository,
+	roleActions RoleActionLookup,
 ) *BindingService {
 	return &BindingService{
 		repo:              repo,
@@ -34,6 +41,7 @@ func NewBindingService(
 		platformRoleRepo:  platformRoleRepo,
 		platformBindRepo:  platformBindRepo,
 		componentRepo:     componentRepo,
+		roleActions:       roleActions,
 	}
 }
 
@@ -54,11 +62,27 @@ func unmarshalActions(raw []byte) []string {
 	return acts
 }
 
+// mappedActions returns the actions registered for a role in the mapping table
+// (nil-safe: a nil lookup means "not wired", so the call site degrades to the
+// JSON column alone rather than erroring).
+func (s *BindingService) mappedActions(kind string, roleID uuid.UUID) []string {
+	if s.roleActions == nil {
+		return nil
+	}
+	acts, err := s.roleActions.ActionsForRole(kind, roleID)
+	if err != nil {
+		return nil
+	}
+	return acts
+}
+
 // ResolveComponentActions returns the effective set of component-scoped
-// actions the subject (user + Keycloak groups) holds on a component, merging
-// every matching ComponentRoleBinding (§7 subject model + V1 legacy) and the
-// component-owner override (§7.4). Duplicate actions are collapsed.
-func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID uuid.UUID, groups []string) ([]string, error) {
+// actions the subject (Keycloak sub + Keycloak groups) holds on a component,
+// merging every matching ComponentRoleBinding (§7 subject model + V1 legacy),
+// the role→action registry (§5.1③) and the component-owner override (§7.4).
+// Duplicate actions are collapsed. userID is still needed for the owner
+// override, which keys on the local user UUID (components.owner_user).
+func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID uuid.UUID, subject string, groups []string) ([]string, error) {
 	seen := map[string]struct{}{}
 	var actions []string
 	add := func(a []string) {
@@ -70,7 +94,7 @@ func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID u
 		}
 	}
 
-	bindings, err := s.repo.ListMatching(componentID, userID, groups)
+	bindings, err := s.repo.ListMatching(componentID, userID, subject, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -81,6 +105,7 @@ func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID u
 				continue
 			}
 			add(unmarshalActions(cr.Actions))
+			add(s.mappedActions("component", *b.ComponentRoleID))
 		} else if b.RoleID != nil {
 			// V1 legacy: resolve the roles table's permissions jsonb.
 			role, rerr := s.roleRepo.GetByID(*b.RoleID)
@@ -134,8 +159,8 @@ func contains(haystack []string, needle string) bool {
 // HasPermission is what middleware calls to authorize a request: does this
 // subject's effective role set on this component include the requested §7
 // action (DATA-MODEL §7.3)?
-func (s *BindingService) HasPermission(componentID, userID uuid.UUID, groups []string, permission string) (bool, error) {
-	actions, err := s.ResolveComponentActions(componentID, userID, groups)
+func (s *BindingService) HasPermission(componentID, userID uuid.UUID, subject string, groups []string, permission string) (bool, error) {
+	actions, err := s.ResolveComponentActions(componentID, userID, subject, groups)
 	if err != nil {
 		return false, err
 	}
@@ -148,9 +173,10 @@ func (s *BindingService) HasPermission(componentID, userID uuid.UUID, groups []s
 }
 
 // HasPlatformPermission checks a platform-level §7 action (page/console
-// visibility, org/user management) for a subject, scoped to an org.
-func (s *BindingService) HasPlatformPermission(orgID *uuid.UUID, userID uuid.UUID, groups []string, permission string) (bool, error) {
-	bindings, err := s.platformBindRepo.ListMatching(orgID, userID, groups)
+// visibility, org/user management) for a subject, scoped to an org. The
+// subject is the Keycloak `sub`; orgID == nil means "global bindings only".
+func (s *BindingService) HasPlatformPermission(orgID *uuid.UUID, subject string, groups []string, permission string) (bool, error) {
+	bindings, err := s.platformBindRepo.ListMatching(orgID, subject, groups)
 	if err != nil {
 		return false, err
 	}
@@ -160,6 +186,11 @@ func (s *BindingService) HasPlatformPermission(orgID *uuid.UUID, userID uuid.UUI
 			continue
 		}
 		for _, a := range unmarshalActions(pr.Actions) {
+			if a == permission {
+				return true, nil
+			}
+		}
+		for _, a := range s.mappedActions("platform", b.PlatformRoleID) {
 			if a == permission {
 				return true, nil
 			}

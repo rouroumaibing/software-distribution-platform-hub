@@ -70,7 +70,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Assembles a PipelineRunSpec from the pipeline's current stages/tasks and dispatches it to a cluster Runner. Set targetClusters to fan the same trigger out to multiple environments (one independent run per cluster); ignored when clusterId is set.",
+                "description": "Assembles a PipelineRunSpec from the pipeline's current stages/tasks and dispatches it to a target Runner. Set targetIds to fan the same trigger out to multiple environments (one independent run per target); ignored when targetId is set.",
                 "consumes": [
                     "application/json"
                 ],
@@ -323,7 +323,7 @@ const docTemplate = `{
                 "tags": [
                     "runs"
                 ],
-                "summary": "Re-deliver a pipeline run's spec to its cluster",
+                "summary": "Re-deliver a pipeline run's spec to its target",
                 "parameters": [
                     {
                         "type": "string",
@@ -585,7 +585,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/api/v1",
 	Schemes:          []string{},
 	Title:            "Software Distribution Platform Hub API",
-	Description:      "Control plane API for the K8s software distribution platform: orgs, catalogs, components, pipelines, runs, clusters and permissions, plus a Runner WebSocket gateway.",
+	Description:      "Control plane API for the K8s software distribution platform: orgs, catalogs, components, pipelines, runs, targets and permissions, plus a Runner WebSocket gateway.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

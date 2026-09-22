@@ -13,30 +13,30 @@ import (
 
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
-	clustermodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/cluster/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
+	targetmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/target/models"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/gateway"
 )
 
-// ErrNoOnlineCluster is returned by Trigger when no Runner is connected and
+// ErrNoOnlineTarget is returned by Trigger when no Runner is connected and
 // reachable to accept the dispatched work.
-var ErrNoOnlineCluster = errors.New("no online cluster available to run this pipeline")
+var ErrNoOnlineTarget = errors.New("no online target available to run this pipeline")
 
 // Dispatcher is the narrow interface the run service needs to push work to a
 // Runner. The gateway implements it; declaring it here keeps the service
 // decoupled from the gateway package.
 type Dispatcher interface {
-	Dispatch(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.ApplyPipelineRunPayload) error
+	Dispatch(ctx context.Context, targetID uuid.UUID, payload *runnerapi.ApplyPipelineRunPayload) error
 	// Approve relays an approver's decision for a paused Approval task to the
-	// Runner owning the run's cluster.
-	Approve(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.ApproveTaskPayload) error
+	// Runner owning the run's target.
+	Approve(ctx context.Context, targetID uuid.UUID, payload *runnerapi.ApproveTaskPayload) error
 	// RolloutControl relays an operator's pause/promote/rollback command for
-	// a Release task's Rollout to the Runner owning the run's cluster.
-	RolloutControl(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.RolloutControlPayload) error
+	// a Release task's Rollout to the Runner owning the run's target.
+	RolloutControl(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RolloutControlPayload) error
 }
 
 // DispatchJobStore is the narrow persistence surface the run service needs for
@@ -46,7 +46,7 @@ type Dispatcher interface {
 type DispatchJobStore interface {
 	Create(*models.DispatchJob) error
 	GetByID(id uuid.UUID) (*models.DispatchJob, error)
-	ListPendingByCluster(clusterID uuid.UUID) ([]models.DispatchJob, error)
+	ListPendingByTarget(targetID uuid.UUID) ([]models.DispatchJob, error)
 	MarkDispatching(id uuid.UUID) (int64, error)
 	MarkDispatched(id uuid.UUID) error
 	MarkFailed(id uuid.UUID, lastErr string, nextRetryAt time.Time) error
@@ -63,9 +63,11 @@ type PipelineRunStore interface {
 	Create(*models.PipelineRun) error
 	GetByID(id uuid.UUID) (*models.PipelineRun, error)
 	Update(*models.PipelineRun) error
-	GetByCRNameCluster(crName string, clusterID uuid.UUID) (*models.PipelineRun, error)
+	GetByCRNameTarget(crName string, targetID uuid.UUID) (*models.PipelineRun, error)
 	FindByPipelineID(pipelineID uuid.UUID, p common.Pagination) ([]models.PipelineRun, int64, error)
-	FindAll(p common.Pagination, phase string) ([]models.PipelineRun, int64, error)
+	// FindAll 的 phase / componentID 都是可选过滤（零值 = 不过滤）。componentID
+	// 供 console 流水线列表的「最近运行」列一次取回该组件下全部运行后本地分组。
+	FindAll(p common.Pagination, phase string, componentID uuid.UUID) ([]models.PipelineRun, int64, error)
 }
 
 // TaskRunStore is the persistence surface over task_runs.
@@ -91,10 +93,10 @@ type TaskTemplateStore interface {
 	ListByStageID(stageID uuid.UUID) ([]pipelinemodels.PipelineTaskTemplate, error)
 }
 
-// ClusterStore resolves target clusters by id / lists online ones.
-type ClusterStore interface {
-	Get(id uuid.UUID) (*clustermodels.Cluster, error)
-	List(p common.Pagination) ([]clustermodels.Cluster, int64, error)
+// TargetStore resolves targets by id / lists online ones.
+type TargetStore interface {
+	Get(id uuid.UUID) (*targetmodels.Target, error)
+	List(p common.Pagination) ([]targetmodels.Target, int64, error)
 }
 
 // LogStore persists streamed log chunks for later retrieval by the G2
@@ -113,6 +115,8 @@ type PipelineApprovalStore interface {
 	GetByRunAndTask(runID, taskRunID uuid.UUID) (*models.PipelineApproval, error)
 	Update(*models.PipelineApproval) error
 	ListByRun(runID uuid.UUID) ([]models.PipelineApproval, error)
+	// ListPending feeds the approval-timeout sweeper (B-11 审批超时).
+	ListPending(limit int) ([]models.PipelineApproval, error)
 }
 
 // ComponentMetaStore resolves a pipeline's owning component + org, used to
@@ -123,7 +127,7 @@ type ComponentMetaStore interface {
 
 // PipelineRunService intentionally does NOT satisfy common.CRUDService —
 // a run isn't created from arbitrary user JSON (it's assembled server-side
-// from a Pipeline's current stages/tasks + target cluster), and Delete
+// from a Pipeline's current stages/tasks + target), and Delete
 // isn't a normal operation on history. Handler wires these methods by hand.
 type PipelineRunService struct {
 	repo             PipelineRunStore
@@ -131,12 +135,17 @@ type PipelineRunService struct {
 	pipelineRepo     PipelineDefStore
 	stageRepo        StageStore
 	taskTemplateRepo TaskTemplateStore
-	clusterSvc       ClusterStore
+	targetSvc        TargetStore
 	dispatcher       Dispatcher
 	dispatchRepo     DispatchJobStore
 	logRepo          LogStore
 	approvalRepo     PipelineApprovalStore
 	componentMeta    ComponentMetaStore
+
+	// productionPolicy is the optional 生产强审批 guard (B-11). Wired with a
+	// setter so the constructor signature — and every existing test fixture —
+	// stays unchanged; nil means "no platform-level production policy".
+	productionPolicy ProductionPolicy
 
 	// sweepInterval controls how often SweepPending retries failed dispatch
 	// jobs. Overridable in tests; defaults to 15s.
@@ -149,7 +158,7 @@ func NewPipelineRunService(
 	pipelineRepo PipelineDefStore,
 	stageRepo StageStore,
 	taskTemplateRepo TaskTemplateStore,
-	clusterSvc ClusterStore,
+	targetSvc TargetStore,
 	dispatcher Dispatcher,
 	dispatchRepo DispatchJobStore,
 	logRepo LogStore,
@@ -162,7 +171,7 @@ func NewPipelineRunService(
 		pipelineRepo:     pipelineRepo,
 		stageRepo:        stageRepo,
 		taskTemplateRepo: taskTemplateRepo,
-		clusterSvc:       clusterSvc,
+		targetSvc:        targetSvc,
 		dispatcher:       dispatcher,
 		dispatchRepo:     dispatchRepo,
 		logRepo:          logRepo,
@@ -173,20 +182,23 @@ func NewPipelineRunService(
 }
 
 // Trigger assembles a PipelineRunSpec from the pipeline's current stages/tasks
-// and dispatches it. If req.TargetClusters is set, the same trigger fans out to
-// every listed environment (one independent PipelineRun per cluster); otherwise
-// a single run is created on the auto/selected cluster.
+// and dispatches it. If req.TargetIDs is set, the same trigger fans out to
+// every listed environment (one independent PipelineRun per target); otherwise
+// a single run is created on the auto/selected target.
 func (s *PipelineRunService) Trigger(pipelineID uuid.UUID, req *models.TriggerRequest) ([]*models.PipelineRun, error) {
-	if len(req.TargetClusters) > 0 {
+	if len(req.TargetIDs) > 0 {
 		return s.triggerFanout(pipelineID, req)
 	}
 
-	clusterID, err := s.selectCluster(req.ClusterID)
+	targetID, err := s.selectTarget(req.TargetID)
 	if err != nil {
 		return nil, err
 	}
 	spec, err := s.buildSpec(pipelineID, req)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.enforceProductionApproval(spec, productionGuardTargets(targetID, nil)); err != nil {
 		return nil, err
 	}
 	p, err := s.pipelineRepo.GetByID(pipelineID)
@@ -201,7 +213,7 @@ func (s *PipelineRunService) Trigger(pipelineID uuid.UUID, req *models.TriggerRe
 	if err != nil {
 		return nil, err
 	}
-	run, err := s.createRun(pipelineID, clusterID, spec, ns, paramsJSON, p.Version, req)
+	run, err := s.createRun(pipelineID, targetID, spec, ns, paramsJSON, p.Version, req)
 	if err != nil {
 		return nil, err
 	}
@@ -209,19 +221,23 @@ func (s *PipelineRunService) Trigger(pipelineID uuid.UUID, req *models.TriggerRe
 }
 
 // triggerFanout creates one independent PipelineRun per target environment.
-// Each environment keeps the 1:1 run↔cluster invariant, so all existing status
-// / TaskRun logic works unchanged. Target clusters only need to EXIST (not be
+// Each environment keeps the 1:1 run↔target invariant, so all existing status
+// / TaskRun logic works unchanged. Targets only need to EXIST (not be
 // online): the durable dispatch queue delivers each run once its Runner
 // reconnects, so a momentarily-offline environment never fails the trigger.
 func (s *PipelineRunService) triggerFanout(pipelineID uuid.UUID, req *models.TriggerRequest) ([]*models.PipelineRun, error) {
-	for _, cid := range req.TargetClusters {
-		if _, err := s.clusterSvc.Get(cid); err != nil {
-			return nil, fmt.Errorf("target cluster %s not found: %w", cid, err)
+	for _, tid := range req.TargetIDs {
+		if _, err := s.targetSvc.Get(tid); err != nil {
+			return nil, fmt.Errorf("target %s not found: %w", tid, err)
 		}
 	}
 
 	spec, err := s.buildSpec(pipelineID, req)
 	if err != nil {
+		return nil, err
+	}
+	// 生产强审批（B-11）：**先**判定再建任何 run —— 拒绝时不能留下半个 fan-out。
+	if err := s.enforceProductionApproval(spec, productionGuardTargets(uuid.Nil, req.TargetIDs)); err != nil {
 		return nil, err
 	}
 	p, err := s.pipelineRepo.GetByID(pipelineID)
@@ -237,9 +253,9 @@ func (s *PipelineRunService) triggerFanout(pipelineID uuid.UUID, req *models.Tri
 		return nil, err
 	}
 
-	runs := make([]*models.PipelineRun, 0, len(req.TargetClusters))
-	for _, cid := range req.TargetClusters {
-		run, err := s.createRun(pipelineID, cid, spec, ns, paramsJSON, p.Version, req)
+	runs := make([]*models.PipelineRun, 0, len(req.TargetIDs))
+	for _, tid := range req.TargetIDs {
+		run, err := s.createRun(pipelineID, tid, spec, ns, paramsJSON, p.Version, req)
 		if err != nil {
 			return nil, err
 		}
@@ -250,12 +266,12 @@ func (s *PipelineRunService) triggerFanout(pipelineID uuid.UUID, req *models.Tri
 
 // createRun persists one PipelineRun + its seeded TaskRun rows, then enqueues a
 // durable dispatch job. A failed delivery (Runner offline) does NOT fail the
-// run — it stays Pending and the job is redelivered later by DrainCluster /
+// run — it stays Pending and the job is redelivered later by DrainTarget /
 // SweepPending. Only a failure to persist the run/job itself is fatal.
-func (s *PipelineRunService) createRun(pipelineID, clusterID uuid.UUID, spec *runnerapi.PipelineRunSpec, ns string, paramsJSON []byte, version int, req *models.TriggerRequest) (*models.PipelineRun, error) {
+func (s *PipelineRunService) createRun(pipelineID, targetID uuid.UUID, spec *runnerapi.PipelineRunSpec, ns string, paramsJSON []byte, version int, req *models.TriggerRequest) (*models.PipelineRun, error) {
 	run := &models.PipelineRun{
 		PipelineID:      pipelineID,
-		ClusterID:       clusterID,
+		TargetID:        targetID,
 		CRName:          fmt.Sprintf("pr-%s", uuid.New().String()[:8]),
 		CRNamespace:     ns,
 		CommitSHA:       req.CommitSHA,
@@ -319,7 +335,7 @@ func (s *PipelineRunService) createRun(pipelineID, clusterID uuid.UUID, spec *ru
 
 	// Wrap the resolved spec in the dispatch envelope carrying the CR
 	// name/namespace the Runner must use, so the status it streams back
-	// routes to this exact run row (ApplyStatus looks up by CRName+cluster).
+	// routes to this exact run row (ApplyStatus looks up by CRName+target).
 	apply := &runnerapi.ApplyPipelineRunPayload{
 		Name:      run.CRName,
 		Namespace: run.CRNamespace,
@@ -328,9 +344,9 @@ func (s *PipelineRunService) createRun(pipelineID, clusterID uuid.UUID, spec *ru
 	// Enqueue a durable dispatch job instead of dispatching inline. This
 	// decouples run creation from Runner connectivity: if the Runner is
 	// momentarily unreachable (or reconnects later), the pending job is
-	// redelivered by DrainCluster (on reconnect) and SweepPending (on
+	// redelivered by DrainTarget (on reconnect) and SweepPending (on
 	// backoff), and the run stays Pending rather than failing the trigger.
-	if err := s.enqueueDispatch(run.ID, clusterID, apply); err != nil {
+	if err := s.enqueueDispatch(run.ID, targetID, apply); err != nil {
 		run.Phase = runnerapi.PipelineRunFailed
 		run.Message = "failed to enqueue dispatch: " + err.Error()
 		_ = s.repo.Update(run)
@@ -343,10 +359,10 @@ func (s *PipelineRunService) createRun(pipelineID, clusterID uuid.UUID, spec *ru
 // update for one of our runs. It advances the run's phase and upserts each
 // task's progress. Unknown runs (e.g. from a Runner that restarted) are
 // ignored so a stray message can't create orphan history.
-func (s *PipelineRunService) ApplyStatus(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.StatusUpdatePayload) error {
-	run, err := s.repo.GetByCRNameCluster(payload.PipelineRunName, clusterID)
+func (s *PipelineRunService) ApplyStatus(ctx context.Context, targetID uuid.UUID, payload *runnerapi.StatusUpdatePayload) error {
+	run, err := s.repo.GetByCRNameTarget(payload.PipelineRunName, targetID)
 	if err != nil {
-		applog.Infof("run: status for unknown run %s on cluster %s (ignored): %v", payload.PipelineRunName, clusterID, err)
+		applog.Infof("run: status for unknown run %s on target %s (ignored): %v", payload.PipelineRunName, targetID, err)
 		return nil
 	}
 
@@ -374,7 +390,7 @@ func (s *PipelineRunService) ApplyStatus(ctx context.Context, clusterID uuid.UUI
 
 // Approve records an approver's decision for a paused Approval-type task on
 // the hub side (§7.4 audit trail + self-review gate) and then relays it to
-// the Runner owning the run's cluster. The Runner patches the TaskRun's
+// the Runner owning the run's target. The Runner patches the TaskRun's
 // Approval status (recording Approver / RejectedBy, advancing to Succeeded
 // once RequiredCount approvers sign off, or failing the run on a rejection);
 // the resulting phase change is then streamed back via MessageStatusUpdate
@@ -434,9 +450,9 @@ func (s *PipelineRunService) Approve(ctx context.Context, pipelineID, runID uuid
 		Approver:        approver,
 		Rejected:        !approved,
 	}
-	if err := s.dispatcher.Approve(ctx, run.ClusterID, payload); err != nil {
+	if err := s.dispatcher.Approve(ctx, run.TargetID, payload); err != nil {
 		if errors.Is(err, gateway.ErrNoRunner) {
-			return fmt.Errorf("cluster for this run is offline, cannot deliver approval decision: %w", err)
+			return fmt.Errorf("target for this run is offline, cannot deliver approval decision: %w", err)
 		}
 		return err
 	}
@@ -446,7 +462,7 @@ func (s *PipelineRunService) Approve(ctx context.Context, pipelineID, runID uuid
 
 // ControlRollout relays an operator's progressive-delivery command (pause /
 // promote / rollback) for a Release task's Rollout to the Runner owning the
-// run's cluster. Like Approve, the hub only brokers the command — the Runner
+// run's target. Like Approve, the hub only brokers the command — the Runner
 // stamps it on the Rollout CR, its reconciler applies it, and the resulting
 // phase change streams back via MessageStatusUpdate and is persisted by
 // ApplyStatus.
@@ -474,9 +490,9 @@ func (s *PipelineRunService) ControlRollout(ctx context.Context, runID uuid.UUID
 		Action:          action,
 		Operator:        operator,
 	}
-	if err := s.dispatcher.RolloutControl(ctx, run.ClusterID, payload); err != nil {
+	if err := s.dispatcher.RolloutControl(ctx, run.TargetID, payload); err != nil {
 		if errors.Is(err, gateway.ErrNoRunner) {
-			return fmt.Errorf("cluster for this run is offline, cannot deliver rollout control: %w", err)
+			return fmt.Errorf("target for this run is offline, cannot deliver rollout control: %w", err)
 		}
 		return err
 	}
@@ -494,8 +510,12 @@ func (s *PipelineRunService) ListByPipeline(pipelineID uuid.UUID, p common.Pagin
 
 // ListAll lists runs across every pipeline — the Run Center's global feed.
 // An empty phase means no filtering.
-func (s *PipelineRunService) ListAll(p common.Pagination, phase string) ([]models.PipelineRun, int64, error) {
-	return s.repo.FindAll(p, phase)
+// ListAll returns the cross-pipeline run list (Run Center). phase and
+// componentID are optional filters — the zero value means "no filter on this
+// dimension". componentID is what lets the console's pipeline list fill its
+// 「最近运行」column with a single request instead of one per pipeline.
+func (s *PipelineRunService) ListAll(p common.Pagination, phase string, componentID uuid.UUID) ([]models.PipelineRun, int64, error) {
+	return s.repo.FindAll(p, phase, componentID)
 }
 
 func (s *PipelineRunService) ListTasks(runID uuid.UUID) ([]models.TaskRun, error) {
@@ -503,16 +523,16 @@ func (s *PipelineRunService) ListTasks(runID uuid.UUID) ([]models.TaskRun, error
 }
 
 // RecordLogChunk persists a log chunk streamed from a Runner over
-// MessageLogChunk. It resolves the (cluster, pipelineRunName) pair to a hub
+// MessageLogChunk. It resolves the (target, pipelineRunName) pair to a hub
 // PipelineRun (the same lookup ApplyStatus uses), then appends the chunk to
 // that run's task log. Chunks for unknown runs — e.g. a Runner that restarted
 // and replays stale output — are ignored so they can't create orphan log
 // rows. A run-level chunk (no task name) is stored under the RunLevelLogBucket
 // so the console can show init/teardown output that isn't tied to a DAG node.
-func (s *PipelineRunService) RecordLogChunk(ctx context.Context, clusterID uuid.UUID, payload *runnerapi.LogChunkPayload) error {
-	run, err := s.repo.GetByCRNameCluster(payload.PipelineRunName, clusterID)
+func (s *PipelineRunService) RecordLogChunk(ctx context.Context, targetID uuid.UUID, payload *runnerapi.LogChunkPayload) error {
+	run, err := s.repo.GetByCRNameTarget(payload.PipelineRunName, targetID)
 	if err != nil {
-		applog.Infof("run: log for unknown run %s on cluster %s (ignored): %v", payload.PipelineRunName, clusterID, err)
+		applog.Infof("run: log for unknown run %s on target %s (ignored): %v", payload.PipelineRunName, targetID, err)
 		return nil
 	}
 	taskName := payload.TaskName
@@ -540,30 +560,30 @@ func (s *PipelineRunService) GetLogs(runID uuid.UUID, taskName string, p common.
 	return s.logRepo.ListByRunTask(runID, taskName, p)
 }
 
-// selectCluster resolves the destination cluster: an explicit, online
-// clusterId wins; otherwise the first online cluster is used. Errors if no
+// selectTarget resolves the destination target: an explicit, online
+// targetId wins; otherwise the first online target is used. Errors if no
 // Runner is currently connected.
-func (s *PipelineRunService) selectCluster(reqClusterID *uuid.UUID) (uuid.UUID, error) {
-	if reqClusterID != nil {
-		cl, err := s.clusterSvc.Get(*reqClusterID)
+func (s *PipelineRunService) selectTarget(reqTargetID *uuid.UUID) (uuid.UUID, error) {
+	if reqTargetID != nil {
+		tg, err := s.targetSvc.Get(*reqTargetID)
 		if err != nil {
 			return uuid.Nil, err
 		}
-		if cl.Status != clustermodels.ClusterStatusOnline {
-			return uuid.Nil, fmt.Errorf("cluster %q is not online", cl.Name)
+		if tg.Status != targetmodels.TargetStatusOnline {
+			return uuid.Nil, fmt.Errorf("target %q is not online", tg.Name)
 		}
-		return cl.ID, nil
+		return tg.ID, nil
 	}
-	online, _, err := s.clusterSvc.List(common.Pagination{Page: 1, PageSize: 100})
+	online, _, err := s.targetSvc.List(common.Pagination{Page: 1, PageSize: 100})
 	if err != nil {
 		return uuid.Nil, err
 	}
-	for _, cl := range online {
-		if cl.Status == clustermodels.ClusterStatusOnline {
-			return cl.ID, nil
+	for _, tg := range online {
+		if tg.Status == targetmodels.TargetStatusOnline {
+			return tg.ID, nil
 		}
 	}
-	return uuid.Nil, ErrNoOnlineCluster
+	return uuid.Nil, ErrNoOnlineTarget
 }
 
 // buildSpec materializes the pipeline's current stages + task templates into
@@ -698,14 +718,14 @@ func templateToTaskSpec(tpl *pipelinemodels.PipelineTaskTemplate) (*runnerapi.Pi
 // then attempts immediate delivery. A delivery failure (e.g. Runner briefly
 // offline) is NOT surfaced as a trigger error: the run stays Pending and the
 // job is redelivered later. Only a failure to persist the job itself is fatal.
-func (s *PipelineRunService) enqueueDispatch(runID, clusterID uuid.UUID, apply *runnerapi.ApplyPipelineRunPayload) error {
+func (s *PipelineRunService) enqueueDispatch(runID, targetID uuid.UUID, apply *runnerapi.ApplyPipelineRunPayload) error {
 	payload, err := json.Marshal(apply)
 	if err != nil {
 		return fmt.Errorf("marshal dispatch payload: %w", err)
 	}
 	job := &models.DispatchJob{
 		PipelineRunID: runID,
-		ClusterID:     clusterID,
+		TargetID:      targetID,
 		Payload:       payload,
 		State:         models.DispatchJobPending,
 	}
@@ -714,13 +734,13 @@ func (s *PipelineRunService) enqueueDispatch(runID, clusterID uuid.UUID, apply *
 	}
 	if err := s.tryDeliver(context.Background(), job.ID); err != nil {
 		// Delivery will be retried; the run itself remains Pending.
-		applog.Infof("run: dispatch enqueued, delivery pending for run %s cluster %s: %v", runID, clusterID, err)
+		applog.Infof("run: dispatch enqueued, delivery pending for run %s target %s: %v", runID, targetID, err)
 	}
 	return nil
 }
 
 // tryDeliver claims a dispatch job and pushes its payload to the target
-// cluster's Runner. It is safe to call concurrently: MarkDispatching only
+// target's Runner. It is safe to call concurrently: MarkDispatching only
 // claims the job when it is still pending/failed, so duplicate calls (e.g.
 // from both a reconnect and the sweeper) collapse to a single delivery.
 func (s *PipelineRunService) tryDeliver(ctx context.Context, jobID uuid.UUID) error {
@@ -748,7 +768,7 @@ func (s *PipelineRunService) tryDeliver(ctx context.Context, jobID uuid.UUID) er
 		return err
 	}
 
-	if err := s.dispatcher.Dispatch(ctx, job.ClusterID, &payload); err != nil {
+	if err := s.dispatcher.Dispatch(ctx, job.TargetID, &payload); err != nil {
 		newAttempts := job.Attempts + 1
 		if newAttempts >= MaxDispatchAttempts {
 			_ = s.dispatchRepo.MarkDead(jobID, err.Error())
@@ -762,14 +782,14 @@ func (s *PipelineRunService) tryDeliver(ctx context.Context, jobID uuid.UUID) er
 	if err := s.dispatchRepo.MarkDispatched(jobID); err != nil {
 		return err
 	}
-	applog.Infof("run: dispatched run %s to cluster %s (job %s)", job.PipelineRunID, job.ClusterID, jobID)
+	applog.Infof("run: dispatched run %s to target %s (job %s)", job.PipelineRunID, job.TargetID, jobID)
 	return nil
 }
 
-// DrainCluster redelivers any pending dispatch jobs for a cluster that just
+// DrainTarget redelivers any pending dispatch jobs for a target that just
 // (re)connected, so work enqueued while it was offline is not lost.
-func (s *PipelineRunService) DrainCluster(ctx context.Context, clusterID uuid.UUID) error {
-	jobs, err := s.dispatchRepo.ListPendingByCluster(clusterID)
+func (s *PipelineRunService) DrainTarget(ctx context.Context, targetID uuid.UUID) error {
+	jobs, err := s.dispatchRepo.ListPendingByTarget(targetID)
 	if err != nil {
 		return err
 	}
@@ -869,7 +889,7 @@ func (s *PipelineRunService) Redispatch(ctx context.Context, runID uuid.UUID) (*
 
 	job := &models.DispatchJob{
 		PipelineRunID: runID,
-		ClusterID:     last.ClusterID,
+		TargetID:      last.TargetID,
 		Payload:       last.Payload,
 		State:         models.DispatchJobPending,
 	}

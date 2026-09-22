@@ -32,12 +32,13 @@ const (
 	KindCatalog    Kind = "Catalog"
 	KindService    Kind = "Service"
 	KindComponent  Kind = "Component"
-	KindCluster    Kind = "Cluster"
+	KindTarget     Kind = "Target"
 	KindEnv        Kind = "Environment"
 	KindPipeline   Kind = "Pipeline"
 	KindRun        Kind = "Run"
 	KindPermission Kind = "Permission"
 	KindArtifact   Kind = "Artifact"
+	KindCredential Kind = "Credential"
 )
 
 // kindModule maps each Kind to its two-digit module number in the ErrorCode
@@ -50,12 +51,13 @@ var kindModule = map[Kind]string{
 	KindCatalog:    "04",
 	KindService:    "04",
 	KindComponent:  "05",
-	KindCluster:    "06",
+	KindTarget:     "06",
 	KindEnv:        "07",
 	KindPipeline:   "08",
 	KindRun:        "09",
 	KindPermission: "10",
 	KindArtifact:   "11",
+	KindCredential: "12",
 }
 
 // APIError is a coded error carrying a stable ErrorCode (e.g. ERR.01400001),
@@ -70,6 +72,11 @@ type APIError struct {
 	ErrorCode    string `json:"errorCode"`
 	ErrorMessage string `json:"errorMessage"`
 	Message      string `json:"message"`
+	// Reasons carries a structured, human-readable list of *why* an operation
+	// was rejected — e.g. the residual child resources blocking a delete. It is
+	// omitted from the JSON body when empty, so existing single-message
+	// responses keep their shape (DELETE-CONTRACT §2.2).
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 // Error implements the error interface.
@@ -91,6 +98,14 @@ func (e *APIError) WithMessage(msg string) *APIError {
 func (e *APIError) WithError(err error) *APIError {
 	if err != nil {
 		e.Message = err.Error()
+	}
+	return e
+}
+
+// WithReasons appends to the structured reasons list and returns e for chaining.
+func (e *APIError) WithReasons(reasons ...string) *APIError {
+	if len(reasons) > 0 {
+		e.Reasons = append(e.Reasons, reasons...)
 	}
 	return e
 }
@@ -132,6 +147,17 @@ func DomainError(kind Kind, httpCode, seq int, msg string) *APIError {
 	return NewAPIError(kind, httpCode, seq, msg)
 }
 
+// DomainErrorWithReasons builds a coded error that also carries a structured
+// reasons list. Used by the deletion contract: a 409 whose body is
+// { "reasons": ["...", "..."] } (DELETE-CONTRACT §2.2).
+func DomainErrorWithReasons(kind Kind, httpCode, seq int, msg string, reasons ...string) *APIError {
+	ae := NewAPIError(kind, httpCode, seq, msg)
+	if len(reasons) > 0 {
+		ae.Reasons = reasons
+	}
+	return ae
+}
+
 // toAPIError normalizes any error into an *APIError. *APIError passes through;
 // gorm.ErrRecordNotFound maps to ErrNotFound; everything else becomes
 // ErrInternal so no raw stack trace leaks to the client.
@@ -152,5 +178,14 @@ func toAPIError(err error) *APIError {
 // Use it for service/repository errors so clients get a stable ErrorCode.
 func AbortWithError(c *gin.Context, err error) {
 	ae := toAPIError(err)
-	c.AbortWithStatusJSON(ae.Code, Envelope{ErrorCode: ae.ErrorCode, Error: ae.Error()})
+	c.AbortWithStatusJSON(ae.Code, Envelope{ErrorCode: ae.ErrorCode, Error: ae.Error(), Reasons: ae.Reasons})
 }
+
+// ErrResourceNotFound is a plain sentinel — deliberately NOT an *APIError.
+// The authorization middleware maps it to 404 when a route's path parameter
+// names a pipeline/run that doesn't exist, and it is compared with errors.Is
+// only. It stays a bare error so it carries no mutable package-level state:
+// the *APIError singletons (ErrNotFound, ErrBadRequest, ...) get rewritten
+// in place by WithError, which is unsafe under concurrent requests, and a
+// hot-path middleware should not touch them.
+var ErrResourceNotFound = errors.New("resource not found")

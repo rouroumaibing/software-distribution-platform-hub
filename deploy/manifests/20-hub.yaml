@@ -6,7 +6,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: hub
-  namespace: sdp-system
+  namespace: sdp-workflow
   labels:
     app: hub
 spec:
@@ -31,7 +31,7 @@ spec:
             - name: GATEWAY_TOKEN
               value: "sdp-dev-token-2026"
             - name: DB_DSN
-              value: "postgres://sdp:sdp@postgres.sdp-system.svc:5432/sdp?sslmode=disable"
+              value: "postgres://sdp:sdp@postgres.sdp-workflow.svc:5432/sdp?sslmode=disable"
             - name: LOG_LEVEL
               value: "info"
             - name: ARTIFACT_STORE_DRIVER
@@ -39,7 +39,7 @@ spec:
             - name: ARTIFACT_STORE_LOCAL_ROOT
               value: "/data/artifacts"
             - name: ARTIFACT_STORE_PUBLIC_URL
-              value: "http://hub.sdp-system.svc:8080"
+              value: "http://hub.sdp-workflow.svc:8080"
           ports:
             - containerPort: 8080
           volumeMounts:
@@ -54,7 +54,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: hub-artifacts
-  namespace: sdp-system
+  namespace: sdp-workflow
 spec:
   accessModes: ["ReadWriteOnce"]
   resources:
@@ -65,7 +65,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: hub
-  namespace: sdp-system
+  namespace: sdp-workflow
 spec:
   type: NodePort
   selector:

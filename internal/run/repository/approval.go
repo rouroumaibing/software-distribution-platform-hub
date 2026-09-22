@@ -37,3 +37,20 @@ func (r *PipelineApprovalRepository) ListByRun(runID uuid.UUID) ([]models.Pipeli
 	err := r.DB.Where("run_id = ?", runID).Order("created_at asc").Find(&items).Error
 	return items, err
 }
+
+// ListPending returns still-undecided approvals, oldest first, for the timeout
+// sweeper (B-11 审批超时).
+//
+// 到期限值**不**下推成 SQL 谓词：每个审批任务各自声明
+// `approval_config.timeoutSeconds`，而该值存在任务模板里，不在本表 —— 拿一个
+// 统一的 cutoff 去过滤会漏掉"超时设得特别长"的行、误伤"设得很短"的行。
+// 因此这里只按状态取，逐行取到各自的时限后由纯谓词判定。
+func (r *PipelineApprovalRepository) ListPending(limit int) ([]models.PipelineApproval, error) {
+	var items []models.PipelineApproval
+	q := r.DB.Where("status = ?", "Pending").Order("created_at asc")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.Find(&items).Error
+	return items, err
+}

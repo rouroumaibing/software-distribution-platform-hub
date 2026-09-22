@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # 2026-09-21 约定反转：名字空间内资源统一注入 metadata.namespace（来自 values.namespace，默认 sdp-workflow）。
+  # 原约定（不写 namespace、交 helm release namespace 决定）已弃用——改为在 values 固定命名空间，
+  # 所有名字空间内资源（Deployment/Service/PVC/本 CM 及 console 的 ConfigMap）一致取 .Values.namespace，
+  # 不会因 helm template(无 -n) 与 kubectl apply -n 不一致而分裂；configMapKeyRef 同 ns 解析正常。
+  # 注意：本注释内不得出现模板语法，否则会被渲染成随命名空间变化的内容。
+  name: package-versions
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Values.basic.component }}
+data:
+  console: {{ .Values.packageVersions.console | quote }}
+  hub: {{ .Values.packageVersions.hub | quote }}
+  runner: {{ .Values.packageVersions.runner | quote }}

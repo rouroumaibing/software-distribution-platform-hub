@@ -32,7 +32,7 @@ func (h *PipelineRunHandler) RegisterRoutes(rg *gin.RouterGroup) {
 
 // Trigger godoc
 // @Summary Trigger a pipeline run
-// @Description Assembles a PipelineRunSpec from the pipeline's current stages/tasks and dispatches it to a cluster Runner. Set targetClusters to fan the same trigger out to multiple environments (one independent run per cluster); ignored when clusterId is set.
+// @Description Assembles a PipelineRunSpec from the pipeline's current stages/tasks and dispatches it to a target Runner. Set targetIds to fan the same trigger out to multiple environments (one independent run per target); ignored when targetId is set.
 // @Tags runs
 // @Accept json
 // @Produce json
@@ -122,7 +122,19 @@ func (h *PipelineRunHandler) ListByPipeline(c *gin.Context) {
 // @Router /runs [get]
 func (h *PipelineRunHandler) ListAll(c *gin.Context) {
 	p := common.ParsePagination(c)
-	items, total, err := h.svc.ListAll(p, c.Query("phase"))
+	// ?componentId= 是可选的第二维过滤（console 流水线列表的「最近运行」列靠它一次
+	// 取回整组件的运行，再本地按 pipeline_id 分组）。非法 uuid 直接 400 而不是退化成
+	// "不过滤" —— 静默返回全量运行会让调用方拿到看似成功、实则范围错误的结果。
+	var componentID uuid.UUID
+	if raw := c.Query("componentId"); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			common.Fail(c, http.StatusBadRequest, err)
+			return
+		}
+		componentID = parsed
+	}
+	items, total, err := h.svc.ListAll(p, c.Query("phase"), componentID)
 	if err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)
 		return
@@ -182,7 +194,7 @@ func (h *PipelineRunHandler) Progress(c *gin.Context) {
 }
 
 // Redispatch godoc
-// @Summary Re-deliver a pipeline run's spec to its cluster
+// @Summary Re-deliver a pipeline run's spec to its target
 // @Description Re-enqueues a fresh dispatch job carrying the last payload for a run whose delivery is stuck (failed/dead) or unconfirmed. Succeeds even if the Runner is offline; the job is delivered on reconnect or by the sweeper. A run stuck in Failed is reset to Pending.
 // @Tags runs
 // @Produce json

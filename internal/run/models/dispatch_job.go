@@ -24,17 +24,17 @@ const (
 )
 
 // DispatchJob is the durable record of one attempt to deliver a PipelineRun's
-// spec to its target cluster's Runner. Trigger enqueues a pending job instead
+// spec to its target's Runner. Trigger enqueues a pending job instead
 // of dispatching inline; a background sweeper (or an immediate redelivery when
 // the Runner reconnects) delivers it. This decouples run creation from Runner
-// connectivity: a run survives a temporarily-offline cluster and is delivered
+// connectivity: a run survives a temporarily-offline target and is delivered
 // once the Runner comes back, instead of failing the whole trigger.
 type DispatchJob struct {
 	ID uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
 
 	PipelineRunID uuid.UUID `gorm:"type:uuid;not null;index" json:"pipelineRunId"`
-	// ClusterID is the target environment/cluster id (== the Runner's cluster id).
-	ClusterID uuid.UUID `gorm:"type:uuid;not null;index" json:"clusterId"`
+	// TargetID is the target environment id (== the Runner's registered target id).
+	TargetID uuid.UUID `gorm:"type:uuid;not null;index" json:"targetId"`
 
 	// Payload is the exact ApplyPipelineRunPayload the Runner must receive,
 	// stored so redelivery needs no re-derivation of the spec.
