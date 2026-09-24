@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -92,7 +93,14 @@ func (h *ComponentHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Delete(id); err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		// 透传 service 层结构化 *common.APIError 的状态码（如「有活跃 run」→ 409），
+		// 而非一律 500（与 pipeline 删除处理器一致）。用 errors.As 以穿透 wrap。
+		var ae *common.APIError
+		if errors.As(err, &ae) {
+			common.Fail(c, ae.Code, err)
+		} else {
+			common.Fail(c, http.StatusInternalServerError, err)
+		}
 		return
 	}
 	c.Status(http.StatusNoContent)
