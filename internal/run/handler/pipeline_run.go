@@ -20,15 +20,12 @@ func NewPipelineRunHandler(svc *service.PipelineRunService) *PipelineRunHandler 
 	return &PipelineRunHandler{svc: svc}
 }
 
-func (h *PipelineRunHandler) RegisterRoutes(rg *gin.RouterGroup) {
-	rg.POST("/pipelines/:id/runs", h.Trigger)
-	rg.GET("/pipelines/:id/runs", h.ListByPipeline)
-	rg.GET("/runs/:id", h.Get)
-	rg.GET("/runs/:id/tasks", h.ListTasks)
-	rg.GET("/runs/:id/progress", h.Progress)
-	rg.POST("/runs/:id/redispatch", h.Redispatch)
-	rg.POST("/pipelines/:id/runs/:runId/tasks/:taskName/decision", h.Approve)
-}
+// Run routes are registered individually in cmd/hub/main.go (the component-scoped
+// block) rather than through a single RegisterRoutes: each one needs its own
+// RequireResourceOwnership + RequirePermission wrapper, and this handler grew
+// routes (stage-progress / logs / rollout control) that the old aggregate
+// RegisterRoutes never listed (C-04 — the method was dead code and an outdated
+// subset, so it was removed).
 
 // Trigger godoc
 // @Summary Trigger a pipeline run

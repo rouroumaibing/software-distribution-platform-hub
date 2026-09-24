@@ -479,6 +479,9 @@ func main() {
 	}
 	permhandler.NewPlatformRoleHandler(platformRoleSvc).RegisterRoutes(platformGroup)
 	permhandler.NewPlatformRoleBindingHandler(platformBindingSvc).RegisterRoutes(platformGroup)
+	// 组织删除是高危平台级动作（org/service Delete 的 TODO「平台级管理员权限校验」）：
+	// 读/建/改仍挂裸 api，仅 DELETE 收到本组，开鉴权后要求平台级 user:manage。
+	orgHandler.RegisterAdminRoutes(platformGroup)
 	// B-11 自定义角色：组件级角色的**读**在上面的裸 api（console 角色选择器要用），
 	// **写**与平台级角色同组 —— 角色定义是权限来源，必须过平台级 user:manage。
 	componentRoleHandler.RegisterAdminRoutes(platformGroup)
