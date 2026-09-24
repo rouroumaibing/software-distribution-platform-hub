@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/cascade"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 )
@@ -16,13 +17,19 @@ type ActiveRunCounter interface {
 	CountActiveByService(serviceID uuid.UUID, phases []string) (int64, error)
 }
 
-// ServiceTreeLookup resolves an org to its 1:1 service tree id.
+// ServiceTreeLookup resolves an org to its 1:1 service tree id, and reports
+// whether a service tree row exists (D-02 parent-liveness guard).
 //
 // 只回 **id** 而不是 org 模块的 ServiceTree 模型：catalog 与 org 之间要共享的事实
 // 只有"这个组织对应哪棵树"这一条，把对方模型类型拉进本包会让两个模块的模型变更
 // 互相绑定。*orgrepository.ServiceTreeRepository 结构化满足本接口，无需适配层。
 type ServiceTreeLookup interface {
 	ServiceTreeIDByOrg(orgID uuid.UUID) (uuid.UUID, error)
+	// ServiceTreeExists reports whether a service tree row exists. A deleted tree
+	// counts as non-existent (soft-delete aware), matching the FK semantics a
+	// missing row would give. Used by Create to reject a dangling serviceTreeId
+	// before write (D-02, aligned with B-15's parent-liveness guard).
+	ServiceTreeExists(treeID uuid.UUID) (bool, error)
 }
 
 // activePhases are run phases that block deletion (functional safety).
@@ -45,13 +52,48 @@ type ServiceService struct {
 	repo       ServiceStore
 	runCounter ActiveRunCounter
 	treeLookup ServiceTreeLookup
+	// cascader 是可选的域内级联删除器（§6.4 #2：删服务 = 同事务级联软删其下全部
+	// 组件及组件子资源）。setter 注入原因同 ComponentService：5 处既有测试用
+	// 3 参构造；nil 时退回单表软删（脱库单测路径）。
+	cascader *cascade.Deleter
 }
 
 func NewServiceService(repo ServiceStore, runCounter ActiveRunCounter, treeLookup ServiceTreeLookup) *ServiceService {
 	return &ServiceService{repo: repo, runCounter: runCounter, treeLookup: treeLookup}
 }
 
-func (s *ServiceService) Create(svc *models.Service) error { return s.repo.Create(svc) }
+// WithCascade 装配域内级联删除器（main.go 在 DB 就绪后调用）。
+func (s *ServiceService) WithCascade(d *cascade.Deleter) *ServiceService {
+	s.cascader = d
+	return s
+}
+
+// Create validates the referenced service tree exists before persisting, so a
+// dangling serviceTreeId can never become a row (D-02, aligned with B-15's
+// parent-liveness guard). The FK on services.service_tree_id already enforces
+// this at the DB level, but an explicit check turns a later FK error into a
+// clear 400 and keeps the invariant even if constraints are relaxed or the
+// create path bypasses the FK somehow.
+//
+// treeLookup==nil 时退回不校验（兼容脱库/未装配路径，与 Delete 的 runCounter
+// 守卫同口径）；ServiceTreeID==uuid.Nil 单独报 400。
+func (s *ServiceService) Create(svc *models.Service) error {
+	if svc.ServiceTreeID == uuid.Nil {
+		return common.DomainError(common.KindService, http.StatusBadRequest, 2,
+			"serviceTreeId is required")
+	}
+	if s.treeLookup != nil {
+		ok, err := s.treeLookup.ServiceTreeExists(svc.ServiceTreeID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return common.DomainError(common.KindService, http.StatusBadRequest, 3,
+				"serviceTreeId does not exist")
+		}
+	}
+	return s.repo.Create(svc)
+}
 
 func (s *ServiceService) Get(id uuid.UUID) (*models.Service, error) { return s.repo.GetByID(id) }
 
@@ -85,9 +127,12 @@ func (s *ServiceService) Update(id uuid.UUID, svc *models.Service) error {
 
 // Delete refuses to drop a service that still has an in-flight run anywhere
 // under it (the only hard rule from DELETE-CONTRACT §6.4 #6). Historical runs
-// do not block. The service is soft-deleted (Base.DeletedAt); child components
-// are managed by their own lifecycles, not cascade-deleted here. The rejection
-// carries a structured reasons list for the console.
+// do not block. The rejection carries a structured reasons list for the console.
+//
+// 子资源处理（§6.4 #2）：装配了 cascader 时走**域内级联** —— 同一事务内先对服务
+// 下每个组件执行整套子资源清理（pipeline/stage/template 软删、environment/config/
+// binding 硬删、artifact 打清理标记），再软删组件、最后软删服务自身；未装配时退回
+// 旧行为（只软删 service，脱库单测路径）。org 层**不**级联（§6.4 表格 #1 拍板）。
 func (s *ServiceService) Delete(id uuid.UUID) error {
 	if s.runCounter != nil {
 		n, err := s.runCounter.CountActiveByService(id, activePhases)
@@ -99,6 +144,9 @@ func (s *ServiceService) Delete(id uuid.UUID) error {
 				"service still has in-progress runs; terminate them before deleting",
 				fmt.Sprintf("%d 条运行仍在进行中（Pending/Running/WaitingApproval），请先终止服务下相关组件的运行", n))
 		}
+	}
+	if s.cascader != nil {
+		return s.cascader.DeleteServiceSubtree(id)
 	}
 	return s.repo.Delete(id)
 }

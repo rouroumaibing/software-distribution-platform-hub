@@ -41,42 +41,29 @@ func (r *BindingRepository) DeleteExpired(now time.Time) (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
-// GetByComponentAndUser is what the legacy middleware path calls to check
-// "does this user have any role on this component". Kept for the V1 column.
-func (r *BindingRepository) GetByComponentAndUser(componentID, userID uuid.UUID) (*models.ComponentRoleBinding, error) {
-	var b models.ComponentRoleBinding
-	err := r.DB.Where("component_id = ? AND user_id = ?", componentID, userID).First(&b).Error
-	if err != nil {
-		return nil, err
-	}
-	return &b, nil
-}
-
-// ListMatching returns every ComponentRoleBinding on a component that
-// applies to the subject, merging §7 subject bindings (user/group) with V1
-// legacy per-user bindings (user_id set, subject_type empty). Group
-// bindings are only included when the subject actually belongs to the group,
-// so an empty groups slice simply skips the group branch.
+// ListMatching returns every ComponentRoleBinding on a component that applies
+// to the subject: a direct `user` binding on the subject's `sub`, plus any
+// `group` binding whose group the subject actually belongs to (so an empty
+// groups slice simply skips the group branch).
 //
-// The user branch matches on subject_id = subject (the Keycloak `sub`), per
-// ACCOUNT-PERMISSION-MODEL §5.3; the legacy branch (user_id = local uuid) is
-// retained for rows written before the D3 subject migration.
+// There is no local-user fallback. Before D3 the query started from
+// `user_id = <local users.id>` and OR'ed the subject branch on top, so rows
+// written before the §7 subject migration still resolved. D3 dropped that
+// column (and the `users` table it pointed at), which leaves exactly one
+// identity key — the Keycloak `sub` (§5.3) — and the DryRun regression test
+// now asserts the emitted SQL has no `user_id` predicate at all.
 //
 // Expired grants (expires_at in the past) are excluded for the same reason as
 // in PlatformRoleBindingRepository.ListMatching: this is the single path the
 // authorization middleware resolves bindings through, so filtering anywhere
-// else would leave an expired grant authorizing requests. now is passed in
-// so the emitted SQL stays deterministic for the DryRun regression test.
-func (r *BindingRepository) ListMatching(componentID uuid.UUID, userID uuid.UUID, subject string, groups []string) ([]models.ComponentRoleBinding, error) {
+// else would leave an expired grant authorizing requests.
+func (r *BindingRepository) ListMatching(componentID uuid.UUID, subject string, groups []string) ([]models.ComponentRoleBinding, error) {
 	var bindings []models.ComponentRoleBinding
-	conds := r.DB.Where("user_id = ?", userID) // V1 legacy rows
-	if subject != "" {
-		conds = conds.Or("subject_type = ? AND subject_id = ?", "user", subject)
-	}
+	subjectConds := r.DB.Where("subject_type = ? AND subject_id = ?", "user", subject)
 	if len(groups) > 0 {
-		conds = conds.Or("subject_type = ? AND subject_id IN ?", "group", groups)
+		subjectConds = subjectConds.Or("subject_type = ? AND subject_id IN ?", "group", groups)
 	}
-	err := r.DB.Where("component_id = ?", componentID).Where(conds).
+	err := r.DB.Where("component_id = ?", componentID).Where(subjectConds).
 		Where("expires_at IS NULL OR expires_at > ?", time.Now()).
 		Find(&bindings).Error
 	return bindings, err

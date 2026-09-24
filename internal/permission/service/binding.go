@@ -12,7 +12,6 @@ import (
 
 type BindingService struct {
 	repo              *repository.BindingRepository
-	roleRepo          *repository.RoleRepository
 	componentRoleRepo *repository.ComponentRoleRepository
 	platformRoleRepo  *repository.PlatformRoleRepository
 	platformBindRepo  *repository.PlatformRoleBindingRepository
@@ -25,9 +24,12 @@ type BindingService struct {
 	roleActions RoleActionLookup
 }
 
+// NewBindingService wires the authorization service. It no longer takes the
+// V1 `roles` repository: D3 dropped component_role_bindings.role_id, so the
+// legacy per-role-permission branch this service used to resolve has no
+// column left to read from.
 func NewBindingService(
 	repo *repository.BindingRepository,
-	roleRepo *repository.RoleRepository,
 	componentRoleRepo *repository.ComponentRoleRepository,
 	platformRoleRepo *repository.PlatformRoleRepository,
 	platformBindRepo *repository.PlatformRoleBindingRepository,
@@ -36,7 +38,6 @@ func NewBindingService(
 ) *BindingService {
 	return &BindingService{
 		repo:              repo,
-		roleRepo:          roleRepo,
 		componentRoleRepo: componentRoleRepo,
 		platformRoleRepo:  platformRoleRepo,
 		platformBindRepo:  platformBindRepo,
@@ -77,12 +78,15 @@ func (s *BindingService) mappedActions(kind string, roleID uuid.UUID) []string {
 }
 
 // ResolveComponentActions returns the effective set of component-scoped
-// actions the subject (Keycloak sub + Keycloak groups) holds on a component,
-// merging every matching ComponentRoleBinding (§7 subject model + V1 legacy),
-// the role→action registry (§5.1③) and the component-owner override (§7.4).
-// Duplicate actions are collapsed. userID is still needed for the owner
-// override, which keys on the local user UUID (components.owner_user).
-func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID uuid.UUID, subject string, groups []string) ([]string, error) {
+// actions the subject (Keycloak `sub` + Keycloak groups) holds on a component,
+// merging every matching ComponentRoleBinding (§7 subject model), the
+// role→action registry (§5.1③) and the component-owner override (§7.4).
+// Duplicate actions are collapsed.
+//
+// The V1 legacy resolution path is gone: D3 dropped component_role_bindings
+// .user_id/.role_id together with the local `users` table, so every binding
+// the query can return is already a §7 subject binding.
+func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, subject string, groups []string) ([]string, error) {
 	seen := map[string]struct{}{}
 	var actions []string
 	add := func(a []string) {
@@ -94,7 +98,7 @@ func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID u
 		}
 	}
 
-	bindings, err := s.repo.ListMatching(componentID, userID, subject, groups)
+	bindings, err := s.repo.ListMatching(componentID, subject, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -106,28 +110,23 @@ func (s *BindingService) ResolveComponentActions(componentID uuid.UUID, userID u
 			}
 			add(unmarshalActions(cr.Actions))
 			add(s.mappedActions("component", *b.ComponentRoleID))
-		} else if b.RoleID != nil {
-			// V1 legacy: resolve the roles table's permissions jsonb.
-			role, rerr := s.roleRepo.GetByID(*b.RoleID)
-			if rerr != nil {
-				continue
-			}
-			add(unmarshalActions(role.Permissions))
 		}
 	}
 
-	// Owner override (§7.4): the component owner (user or group) gets the
+	// Owner override (§7.4): the component owner (subject or group) gets the
 	// full component-admin action set even before an explicit binding is
 	// created (P3b auto-binds the owner too, this is the safety net).
-	if ownerActs, oerr := s.ownerActions(componentID, userID, groups); oerr == nil {
+	if ownerActs, oerr := s.ownerActions(componentID, subject, groups); oerr == nil {
 		add(ownerActs)
 	}
 	return actions, nil
 }
 
 // ownerActions returns the component-admin action set when the subject is the
-// component's owner, else nil.
-func (s *BindingService) ownerActions(componentID uuid.UUID, userID uuid.UUID, groups []string) ([]string, error) {
+// component's owner, else nil. OwnerSub holds a Keycloak `sub` (§5.3), so the
+// comparison is a plain string equality against the request subject — the
+// local-uuid comparison D3 removed.
+func (s *BindingService) ownerActions(componentID uuid.UUID, subject string, groups []string) ([]string, error) {
 	if s.componentRepo == nil {
 		return nil, nil
 	}
@@ -135,7 +134,7 @@ func (s *BindingService) ownerActions(componentID uuid.UUID, userID uuid.UUID, g
 	if err != nil {
 		return nil, err
 	}
-	isOwner := (c.OwnerUser != nil && *c.OwnerUser == userID) ||
+	isOwner := (c.OwnerSub != nil && *c.OwnerSub == subject) ||
 		(c.OwnerGroup != nil && contains(groups, *c.OwnerGroup))
 	if !isOwner {
 		return nil, nil
@@ -159,8 +158,8 @@ func contains(haystack []string, needle string) bool {
 // HasPermission is what middleware calls to authorize a request: does this
 // subject's effective role set on this component include the requested §7
 // action (DATA-MODEL §7.3)?
-func (s *BindingService) HasPermission(componentID, userID uuid.UUID, subject string, groups []string, permission string) (bool, error) {
-	actions, err := s.ResolveComponentActions(componentID, userID, subject, groups)
+func (s *BindingService) HasPermission(componentID uuid.UUID, subject string, groups []string, permission string) (bool, error) {
+	actions, err := s.ResolveComponentActions(componentID, subject, groups)
 	if err != nil {
 		return false, err
 	}

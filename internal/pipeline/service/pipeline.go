@@ -62,6 +62,15 @@ func (s *PipelineService) Create(p *models.Pipeline) error {
 
 func (s *PipelineService) Get(id uuid.UUID) (*models.Pipeline, error) { return s.repo.GetByID(id) }
 
+// GetByID is the liveness-aware read the run trigger routes through (run 触发
+// 路径改走 pipeline service 校验, 不再直读 repo). A missing or soft-deleted
+// pipeline returns gorm.ErrRecordNotFound, which the run handler normalizes to
+// a 404 via common.AbortWithError — so triggering a dead pipeline is a clean
+// 404 instead of a 500.
+func (s *PipelineService) GetByID(id uuid.UUID) (*models.Pipeline, error) {
+	return s.repo.GetByID(id)
+}
+
 func (s *PipelineService) ListByComponent(componentID uuid.UUID, p common.Pagination) ([]models.Pipeline, int64, error) {
 	return s.repo.FindByComponentID(componentID, p)
 }

@@ -26,6 +26,7 @@ import (
 	artifactrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/repository"
 	artifactsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/service"
 	artifactstorage "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/storage"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/cascade"
 	cataloghandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/handler"
 	catalogrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/repository"
 	catalogsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/service"
@@ -44,10 +45,12 @@ import (
 	envgrouprepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/repository"
 	envgroupsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/service"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/gateway"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/keycloak"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/middleware"
 	orghandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/handler"
 	orgrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/repository"
 	orgsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/service"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/packageversion"
 	permhandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/handler"
 	permmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
 	permbrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/repository"
@@ -110,7 +113,6 @@ func main() {
 	taskRunLogRepo := runrepo.NewTaskRunLogRepository(gdb)
 	dispatchJobRepo := runrepo.NewDispatchJobRepository(gdb)
 	rolloutRunRepo := runrepo.NewRolloutRunRepository(gdb)
-	userRepo := permbrepo.NewUserRepository(gdb)
 	roleRepo := permbrepo.NewRoleRepository(gdb)
 	bindingRepo := permbrepo.NewBindingRepository(gdb)
 	componentRoleRepo := permbrepo.NewComponentRoleRepository(gdb)
@@ -123,13 +125,12 @@ func main() {
 	permRequestRepo := permbrepo.NewPermissionRequestRepository(gdb)
 
 	// --- services -----------------------------------------------------------
-	userSvc := permissionsvc.NewUserService(userRepo)
 	roleSvc := permissionsvc.NewRoleService(roleRepo)
 	// roleMappingSvc is the reviewable role→action registry
 	// (ACCOUNT-PERMISSION-MODEL §5.1③); it is wired into bindingSvc so the
 	// mapping table is a consulted source of actions, not a decorative mirror.
 	roleMappingSvc := permissionsvc.NewRoleAPIMappingService(roleMappingRepo, platformRoleRepo, componentRoleRepo)
-	bindingSvc := permissionsvc.NewBindingService(bindingRepo, roleRepo, componentRoleRepo, platformRoleRepo, platformBindRepo, componentRepo, roleMappingSvc)
+	bindingSvc := permissionsvc.NewBindingService(bindingRepo, componentRoleRepo, platformRoleRepo, platformBindRepo, componentRepo, roleMappingSvc)
 	// C-10：平台级角色的定义与授予在补这两个服务之前只能靠 seed SQL 写入，
 	// 没有任何主体能经 API 拿到平台级权限（ACCOUNT-PERMISSION-MODEL §10 #15）。
 	platformRoleSvc := permissionsvc.NewPlatformRoleService(platformRoleRepo)
@@ -152,17 +153,38 @@ func main() {
 	if serr := roleMappingSvc.SyncFromRoles(); serr != nil {
 		applog.Warnf("hub: role→action registry sync failed (continuing): %v", serr)
 	}
-	orgSvc := orgsvc.NewOrgService(orgRepo, serviceTreeRepo)
+	// Org carrier groups (/org:<slug>) are provisioned in Keycloak when auth
+	// is enabled and the sdp-backend service-account secret is configured.
+	// Without it the hub stays a passive Resource Server and skips group sync
+	// (dev mode). The provisioner is best-effort everywhere it is used, so a
+	// Keycloak outage never blocks org creation or hub startup.
+	var orgGroupProvisioner keycloak.GroupProvisioner
+	if !cfg.AuthDisabled() {
+		if cfg.KeycloakAdminClientSecret == "" {
+			applog.Warnf("hub: KEYCLOAK_ADMIN_CLIENT_SECRET not set — org carrier groups will not be synced to Keycloak")
+		} else {
+			orgGroupProvisioner = keycloak.NewClient(cfg.KeycloakIssuer, cfg.KeycloakAdminClientID, cfg.KeycloakAdminClientSecret)
+		}
+	}
+	orgSvc := orgsvc.NewOrgService(orgRepo, serviceTreeRepo, orgGroupProvisioner)
 	// searchSvc 是跨资源的**导航**搜索：服务树页与 ⌘K 浮层共用同一个端点
 	// （CONSOLE-UI-DESIGN.md 附 A N-8）。它无状态、无写路径，只做跨表查询。
 	searchSvc := searchsvc.NewSearchService(searchRepo)
 	// serviceTreeRepo 同时满足 org 侧（建树）与 catalog 侧的窄接口
 	// ServiceTreeLookup（GET /orgs/:id/services，附 A N-9）。
-	catalogSvc := catalogsvc.NewServiceService(catalogRepo, pipelineRunRepo, serviceTreeRepo)
-	componentSvc := componentsvc.NewComponentService(componentRepo, bindingRepo, componentRoleRepo, pipelineRunRepo)
+	// cascadeDel 是域内级联删除器（DELETE-CONTRACT §6.4）：catalog/component
+	// 两处 Delete 走它，在**同一事务**内清理子资源 —— 这是 §1.3 记的
+	// 「校验与删除不在同一事务」缺口的落地（活跃运行判定仍在各 service）。
+	cascadeDel := cascade.NewDeleter(gdb)
+	catalogSvc := catalogsvc.NewServiceService(catalogRepo, pipelineRunRepo, serviceTreeRepo).WithCascade(cascadeDel)
+	componentSvc := componentsvc.NewComponentService(componentRepo, bindingRepo, componentRoleRepo, pipelineRunRepo).WithCascade(cascadeDel)
 	componentConfigSvc := componentsvc.NewComponentConfigService(componentConfigRepo, envRepo)
 	targetSvc := targetsvc.NewTargetService(targetRepo)
+	// §9.9 / §9.5 agent operation ledger（exec / install / upgrade）：hub 负责
+	// 校验 + 记账 + 出 202 句柄，执行归 Runner（hub 无 client-go）。
+	agentOpSvc := targetsvc.NewAgentOpService(targetrepo.NewAgentOpRepository(gdb))
 	envSvc := envsvc.NewEnvironmentService(envRepo, targetRepo, componentConfigRepo)
+	envSvc.SetAgentOpStore(agentOpSvc)
 	credSvc := credsvc.NewCredentialService(credRepo)
 	envGroupSvc := envgroupsvc.NewEnvironmentGroupService(envGroupRepo)
 	// versionSvc 是流水线定义历史的**唯一写者**：pipelines.version 的自增与
@@ -238,8 +260,59 @@ func main() {
 		applog.Warnf("hub: artifact storage driver does not support listing — orphan reconciliation (B-16) is skipped, not reported as clean")
 	}
 
+	// --- artifact retention GC (B-16 收口：让 `expires_at` 真正生效) -----------
+	// 与对账**分开**装配：对账只报告（输入有合法歧义），GC 会删（输入是运维自己写下的
+	// 保留期声明）。默认关闭（interval=0），显式设置 ARTIFACT_GC_INTERVAL 才启用。
+	//
+	// typed-nil 处理：把一个 storage.Client(nil) 直接转成 ObjectDeleter 会得到一个
+	// **非 nil** 的接口（底层指针为 nil），GC 里的 `store != nil` 会误判成"已配置"并在
+	// Delete 上 panic。所以只在本进程真的建出了驱动时才赋值。
+	var gcDeleter artifactsvc.ObjectDeleter
+	if artifactStore != nil {
+		gcDeleter = artifactStore
+	}
+	artifactGC := artifactsvc.NewArtifactGC(artifactRepo, gcDeleter, cfg.ArtifactGCBatch)
+	go artifactGC.Run(ctx, cfg.ArtifactGCInterval)
+	if cfg.ArtifactGCInterval > 0 {
+		gcBatch := cfg.ArtifactGCBatch
+		if gcBatch <= 0 {
+			gcBatch = artifactsvc.DefaultArtifactGCBatch
+		}
+		applog.Infof("hub: artifact retention GC enabled every %s (batch=%d, objectStore=%v)",
+			cfg.ArtifactGCInterval, gcBatch, gcDeleter != nil)
+	}
+
 	// --- gateway (Hub side of the Runner long connection) -------------------
 	gw := gateway.New(targetSvc, cfg.GatewayToken)
+
+	// --- agent op 全链路（§9.5 / §9.9，UNIMPLEMENTED-MODULES-PLAN §16.5）------
+	// 派发器把 queued 的 exec op 组装成 wire payload 推到目标 runner 连接上
+	// （kubeconfig-access 环境在这里解密凭据随 payload 下发）；install/upgrade
+	// 留守 queued（bootstrap 流程属独立特性，见 dispatcher 文件头裁定）。
+	// opStream 是 SSE 扇出源：状态/日志事件由下方两个 gateway 回调驱动。
+	opStream := targetsvc.NewOpStream()
+	agentOpSvc.SetDispatcher(&agentOpDispatcher{gw: gw, envRepo: envRepo, credRepo: credRepo})
+	agentOpSvc.SetStream(opStream)
+	gw.SetAgentOpStatusHandler(func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentOpStatusPayload) {
+		opID, err := uuid.Parse(payload.OpID)
+		if err != nil {
+			applog.Infof("gateway: agent op status bad op id %q: %v", payload.OpID, err)
+			return
+		}
+		if _, err := agentOpSvc.ApplyStatus(ctx, opID, payload.Status, payload.Message); err != nil {
+			applog.Infof("gateway: agent op status apply failed (op %s → %s): %v", payload.OpID, payload.Status, err)
+		}
+	})
+	gw.SetAgentOpLogHandler(func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentOpLogPayload) {
+		opID, err := uuid.Parse(payload.OpID)
+		if err != nil {
+			applog.Infof("gateway: agent op log bad op id %q: %v", payload.OpID, err)
+			return
+		}
+		if _, err := agentOpSvc.AppendLog(ctx, opID, payload.Stream, payload.Chunk); err != nil {
+			applog.Infof("gateway: agent op log append failed (op %s): %v", payload.OpID, err)
+		}
+	})
 
 	// run service needs the gateway to dispatch work; the gateway calls back
 	// into the run service when Runner status arrives. Wired here to avoid a
@@ -248,7 +321,11 @@ func main() {
 	// componentMetaResolver lets the run service denormalize org_id /
 	// component_id onto hub-side PipelineApproval rows (DATA-MODEL §7.4).
 	componentMeta := &componentMetaResolver{pipelineRepo: pipelineRepo, componentRepo: componentRepo}
-	runSvc := runsvc.NewPipelineRunService(pipelineRunRepo, taskRunRepo, pipelineRepo, stageRepo, taskTemplateRepo, targetSvc, gw, dispatchJobRepo, taskRunLogRepo, approvalRepo, componentMeta)
+	// 第三个参数注入 pipeline SERVICE（而非裸 repo）：run 触发路径改走
+	// pipeline service 的存活校验 (GetByID 软删感知)，不绕开领域层
+	// (run 触发路径未补齐项 #1)。pipelineSvc 满足 run 服务的 PipelineDefStore
+	// 窄接口（GetByID）。
+	runSvc := runsvc.NewPipelineRunService(pipelineRunRepo, taskRunRepo, pipelineSvc, stageRepo, taskTemplateRepo, targetSvc, gw, dispatchJobRepo, taskRunLogRepo, approvalRepo, componentMeta)
 	gw.SetStatusHandler(func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.StatusUpdatePayload) {
 		_ = runSvc.ApplyStatus(ctx, targetID, payload)
 	})
@@ -269,10 +346,15 @@ func main() {
 		}
 	})
 	// When a Runner (re)connects, redeliver any dispatch jobs enqueued while
-	// it was offline so those runs are not lost.
+	// it was offline so those runs are not lost. The agent-op ledger gets the
+	// same drain: exec ops queued while the target was offline are pushed now
+	// (§9.5 / §16.5); install/upgrade stay queued by design (bootstrap flow).
 	gw.SetConnectHandler(func(ctx context.Context, targetID uuid.UUID) {
 		if err := runSvc.DrainTarget(ctx, targetID); err != nil {
 			applog.Infof("gateway: drain failed for target %s: %v", targetID, err)
+		}
+		if err := agentOpSvc.DrainTarget(ctx, targetID); err != nil {
+			applog.Infof("gateway: agent op drain failed for target %s: %v", targetID, err)
 		}
 	})
 	// Background sweeper retries failed dispatch jobs on backoff. Runs until
@@ -292,6 +374,10 @@ func main() {
 	componentHandler := componenthandler.NewComponentHandler(componentSvc)
 	componentConfigHandler := componenthandler.NewComponentConfigHandler(componentConfigSvc)
 	targetHandler := targethandler.NewTargetHandler(targetSvc)
+	// 接入编排（§9.9）：install/upgrade 取版本矩阵里的 runner 版本。
+	targetHandler.SetAgentOps(agentOpSvc, cfg.PackageVersionRunner)
+	// agent op 台账读侧：轮询 / 列表 / SSE 流式（§16.5）。
+	agentOpHandler := targethandler.NewAgentOpHandler(agentOpSvc)
 	envHandler := envhandler.NewEnvironmentHandler(envSvc)
 	credHandler := credhandler.NewCredentialHandler(credSvc)
 	envGroupHandler := envgrouphandler.NewEnvironmentGroupHandler(envGroupSvc)
@@ -300,7 +386,6 @@ func main() {
 	taskTemplateHandler := pipelinehandler.NewTaskTemplateHandler(taskTemplateSvc)
 	pipelineVersionHandler := pipelinehandler.NewPipelineVersionHandler(versionSvc)
 	artifactHandler := artifacthandler.NewArtifactHandler(artifactSvc)
-	userHandler := permhandler.NewUserHandler(userSvc)
 	roleHandler := permhandler.NewRoleHandler(roleSvc)
 	componentRoleHandler := permhandler.NewComponentRoleHandler(componentRoleSvc)
 	resourceOwnershipHandler := permhandler.NewResourceOwnershipHandler(resourceOwnershipSvc)
@@ -311,6 +396,7 @@ func main() {
 	searchHandler := searchhandler.NewSearchHandler(searchSvc)
 	releaseSvc := runsvc.NewReleaseService(rolloutRunRepo)
 	releaseHandler := runhandler.NewReleaseHandler(releaseSvc)
+	pkgVerHandler := packageversion.NewHandler(cfg)
 
 	// --- auth (optional) ----------------------------------------------------
 	var auth *middleware.Authenticator
@@ -327,14 +413,23 @@ func main() {
 	}
 
 	// --- router -------------------------------------------------------------
+	// One-time backfill: ensure every existing org already has its `/org:<slug>`
+	// carrier group in Keycloak (orgs created before group provisioning existed
+	// have none). Best-effort and idempotent — a Keycloak outage is logged, not
+	// fatal. Runs before the router so groups exist by the time the API serves.
+	orgSvc.ReconcileGroups(ctx)
+
 	r := gin.Default()
 	api := r.Group("/api/v1")
 
 	if auth != nil {
 		api.Use(auth.Middleware())
 	}
-	// UserContext runs after auth (or provisions a dev user when auth is off).
-	api.Use(middleware.UserContext(userSvc))
+	// UserContext runs after auth and lifts the token's identity dimensions
+	// (subject / display name / groups / orgs) into the request context. It is
+	// pure — no DB, no provisioned row — because hub keeps no user table
+	// (ACCOUNT-PERMISSION-MODEL §2.2 / D3).
+	api.Use(middleware.UserContext())
 	// AuditMiddleware is the single cross-cutting writer for mutating requests
 	// (§6). It runs after UserContext so the subject is resolved, and wraps
 	// every route so business code never writes audit rows itself.
@@ -344,6 +439,7 @@ func main() {
 	// permission check in this M1 wiring.
 	orgHandler.RegisterRoutes(api)
 	targetHandler.RegisterRoutes(api)
+	agentOpHandler.RegisterRoutes(api)
 	catalogHandler.RegisterRoutes(api)
 	componentHandler.RegisterRoutes(api)
 	componentConfigHandler.RegisterRoutes(api)
@@ -356,7 +452,6 @@ func main() {
 	pipelineVersionHandler.RegisterRoutes(api)
 	artifactHandler.RegisterRoutes(api)
 	releaseHandler.RegisterRoutes(api)
-	userHandler.RegisterRoutes(api)
 	roleHandler.RegisterRoutes(api)
 	componentRoleHandler.RegisterRoutes(api)
 	bindingHandler := permhandler.NewBindingHandler(bindingSvc, componentRepo)
@@ -379,6 +474,8 @@ func main() {
 	permRequestHandler.RegisterRoutes(platformGroup)
 	userInfoHandler.RegisterRoutes(api)
 	searchHandler.RegisterRoutes(api)
+	// §9.10 版本矩阵（CM package-versions → env → 只读端点）。
+	pkgVerHandler.RegisterRoutes(api)
 
 	// Component-scoped routes get a RequirePermission wrapper, but only when
 	// auth is enabled; in dev mode they're mounted bare. The locator resolves
@@ -412,6 +509,8 @@ func main() {
 	scoped.GET("/runs/:id", pipelineRunHandler.Get)
 	scoped.GET("/runs/:id/tasks", pipelineRunHandler.ListTasks)
 	scoped.GET("/runs/:id/progress", pipelineRunHandler.Progress)
+	// DATA-MODEL §6.5 确认新增：阶段级进度卡（derive-on-read 聚合）。
+	scoped.GET("/runs/:id/stage-progress", pipelineRunHandler.StageProgress)
 	scoped.GET("/runs/:id/log", pipelineRunHandler.GetLogs)
 	scoped.GET("/runs/:id/tasks/:name/log", pipelineRunHandler.GetLogs)
 	scoped.POST("/pipelines/:id/runs/:runId/tasks/:taskName/decision", wrap(middleware.ResourcePipeline, "id", permmodels.ActionApprovalApprove, pipelineRunHandler.Approve)...)

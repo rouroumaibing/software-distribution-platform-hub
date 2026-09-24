@@ -629,10 +629,20 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 				return nil, err
 			}
 			task.Stage = stage.Name
+			// Hand-authored DependsOn always wins (both cross-stage and
+			// serial chaining are skipped for it) — same convention as before.
+			handAuthored := len(task.DependsOn) > 0
 			// Derive DependsOn from the previous stage only when the task
 			// doesn't already declare its own dependencies.
-			if len(task.DependsOn) == 0 && len(prevStageTaskNames) > 0 {
+			if !handAuthored && len(prevStageTaskNames) > 0 {
 				task.DependsOn = append(task.DependsOn, prevStageTaskNames...)
+			}
+			// C-06 serial executionMode（原仅做 API↔DB 往返）：serial 阶段内
+			// 子任务严格先后 —— 每个任务追加同阶段紧邻前驱依赖。与跨阶段推导
+			// 叠加（用 handAuthored 区分，避免上面的推导把它挡掉）。
+			if stage.ExecutionMode == pipelinemodels.ExecutionModeSerial &&
+				!handAuthored && len(stageTaskNames) > 0 {
+				task.DependsOn = append(task.DependsOn, stageTaskNames[len(stageTaskNames)-1])
 			}
 			spec.Tasks = append(spec.Tasks, *task)
 			stageTaskNames = append(stageTaskNames, task.Name)
@@ -858,6 +868,105 @@ func (s *PipelineRunService) Progress(runID uuid.UUID) (*models.PipelineRun, []m
 		return nil, nil, err
 	}
 	return run, tasks, nil
+}
+
+// StageProgressRow is one aggregated stage row of GET /runs/:id/stage-progress
+// (DATA-MODEL §6.5, 确认新增：derive-on-read，不新增持久化).
+type StageProgressRow struct {
+	Name          string `json:"name"`
+	Sequence      int    `json:"sequence"`
+	ExecutionMode string `json:"executionMode"`
+	Status        string `json:"status"` // pending | running | succeeded | failed
+	Done          int    `json:"done"`
+	Total         int    `json:"total"`
+}
+
+// StageProgress aggregates a run's TaskRuns by their denormalized StageName and
+// joins the pipeline definition's stage metadata (sequence / executionMode).
+// StageName 是触发时刻的快照而非外键（见 TaskRun.StageName 注释）：定义在触发后
+// 漂移、快照名在定义里已不存在的阶段，会以合成行追加在末尾（Sequence=0、
+// executionMode 为空串），不静默丢数据。
+func (s *PipelineRunService) StageProgress(runID uuid.UUID) (*models.PipelineRun, []StageProgressRow, error) {
+	run, err := s.repo.GetByID(runID)
+	if err != nil {
+		return nil, nil, err
+	}
+	tasks, err := s.taskRepo.ListByPipelineRunID(runID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Count tasks per stage name; `order` keeps first-appearance order so
+	// synthetic rows (definition drift) come out deterministically.
+	type tally struct{ done, failed, running, total int }
+	counts := map[string]*tally{}
+	var order []string
+	for _, t := range tasks {
+		if counts[t.StageName] == nil {
+			counts[t.StageName] = &tally{}
+			order = append(order, t.StageName)
+		}
+		c := counts[t.StageName]
+		c.total++
+		switch t.Phase {
+		case runnerapi.TaskRunSucceeded, runnerapi.TaskRunFailed, runnerapi.TaskRunSkipped:
+			c.done++
+			if t.Phase == runnerapi.TaskRunFailed {
+				c.failed++
+			}
+		case runnerapi.TaskRunRunning:
+			c.running++
+		}
+	}
+
+	derive := func(c *tally) string {
+		switch {
+		case c == nil || c.total == 0:
+			return "pending"
+		case c.failed > 0:
+			return "failed"
+		case c.done == c.total:
+			return "succeeded"
+		case c.done > 0 || c.running > 0:
+			return "running"
+		default:
+			return "pending"
+		}
+	}
+
+	stages, err := s.stageRepo.ListByPipelineID(run.PipelineID)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows := make([]StageProgressRow, 0, len(stages)+len(order))
+	seen := map[string]bool{}
+	for _, st := range stages {
+		seen[st.Name] = true
+		c := counts[st.Name]
+		row := StageProgressRow{
+			Name:          st.Name,
+			Sequence:      st.Sequence,
+			ExecutionMode: st.ExecutionMode,
+			Status:        derive(c),
+		}
+		if c != nil {
+			row.Done, row.Total = c.done, c.total
+		}
+		rows = append(rows, row)
+	}
+	// Definition drift: task snapshots that no longer match a defined stage.
+	for _, name := range order {
+		if seen[name] {
+			continue
+		}
+		rows = append(rows, StageProgressRow{
+			Name:   name,
+			Status: derive(counts[name]),
+			Done:   counts[name].done,
+			Total:  counts[name].total,
+		})
+	}
+	return run, rows, nil
 }
 
 // Redispatch re-delivers a run whose dispatch job is stuck (failed/dead) or was

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,16 +40,28 @@ type ConfigOverrideCounter interface {
 	CountByEnvironment(envID uuid.UUID) (int64, error)
 }
 
+// AgentOpStore is the narrow persistence surface for hub-issued agent
+// operations (§9.5 直连执行). One method wide on purpose — exec only creates.
+type AgentOpStore interface {
+	Create(op *targetmodels.AgentOp) error
+}
+
 // EnvironmentService satisfies common.CRUDService[models.Environment].
 type EnvironmentService struct {
 	repo          EnvironmentStore
 	targetRepo    TargetLookup
 	configCounter ConfigOverrideCounter
+	agentOps      AgentOpStore
 }
 
 func NewEnvironmentService(repo EnvironmentStore, targetRepo TargetLookup, configCounter ConfigOverrideCounter) *EnvironmentService {
 	return &EnvironmentService{repo: repo, targetRepo: targetRepo, configCounter: configCounter}
 }
+
+// SetAgentOpStore wires the agent-operation store (same optional-injection
+// pattern as run service's SetProductionPolicy). Exec returns a 500-class
+// error when it is not wired, instead of silently dropping the request.
+func (s *EnvironmentService) SetAgentOpStore(a AgentOpStore) { s.agentOps = a }
 
 func (s *EnvironmentService) Create(e *models.Environment) error {
 	e.Status = deriveStatus(e)
@@ -150,6 +163,46 @@ func (s *EnvironmentService) Test(id uuid.UUID) (*TestReport, error) {
 		return nil, err
 	}
 	return report, nil
+}
+
+// ExecRequest is the POST /environments/:id/exec body. Command and script are
+// mutually-exclusive conveniences: exactly what runs is recorded verbatim in
+// the AgentOp detail for audit.
+type ExecRequest struct {
+	Command string `json:"command"`
+	Script  string `json:"script"`
+}
+
+// Exec records a direct-exec operation against the environment's target
+// (§9.5 / §9.7 直连通道). 与 Test 的 skip 语义同源 —— hub 无 client-go/ssh，
+// 不真正连目标：这里校验请求、落 agent_ops 台账并返回 202 句柄，执行由
+// Runner（agent 通道）或直连执行器（后续）完成。
+func (s *EnvironmentService) Exec(id uuid.UUID, in ExecRequest) (*targetmodels.AgentOp, error) {
+	env, err := s.repo.GetByID(id)
+	if err != nil {
+		return nil, err
+	}
+	if in.Command == "" && in.Script == "" {
+		return nil, common.ErrBadRequest.WithError(errors.New("command 或 script 至少其一必填"))
+	}
+	if s.agentOps == nil {
+		return nil, common.ErrInternal.WithError(errors.New("agent op store not wired"))
+	}
+	detail := in.Command
+	if detail == "" {
+		detail = in.Script
+	}
+	op := &targetmodels.AgentOp{
+		TargetID: env.TargetID,
+		EnvID:    &env.ID,
+		OpType:   targetmodels.AgentOpExec,
+		Status:   targetmodels.AgentOpQueued,
+		Detail:   detail,
+	}
+	if err := s.agentOps.Create(op); err != nil {
+		return nil, err
+	}
+	return op, nil
 }
 
 func buildTestReport(env *models.Environment, target *targetmodels.Target) *TestReport {

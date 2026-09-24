@@ -1,0 +1,34 @@
+{{- if .Values.gatewayRoute.enabled }}
+# Keycloak 对外路由（/keycloak 前缀）：替代 keycloakx 子 chart 的 Ingress
+# （keycloak.ingress.enabled 已置 false —— ingress-nginx 已废弃）。
+#
+# 路由语义与原 Ingress 等价：host www.sdpworkflow.com、Prefix /keycloak、后端 HTTP svc 80。
+# Gateway API 按「路径最长前缀」优先，/keycloak 天然先于 console 的 / 命中，
+# 不依赖规则书写顺序（与原 nginx 最长前缀行为一致）。
+# parentRefs 不指定 sectionName => 同时挂 http/https 两个 listener（dev 下 http 也可直连调试）。
+# OIDC 正式链路走 https；keycloak 后端保持 HTTP，
+# proxy.mode=xforwarded 由 envoy 注入的 X-Forwarded-* 推导前端地址（见 values 注释）。
+#
+# Gateway（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（根目录 deploy/gateway-sdp.yaml，
+# 不随仓分发），本 chart 按名字引用（gatewayRoute.name，可 --set 覆盖）——保持独立可装：
+# 没有网关时本路由只是 Pending，不影响 hub/keycloak 自身运行。
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak
+  namespace: {{ .Values.namespace }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gatewayRoute.name }}
+  hostnames:
+    - {{ .Values.gatewayRoute.hostname }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /keycloak
+      backendRefs:
+        # keycloakx 子 chart 创建的 svc（release 名 hub + keycloak-http）；端口名 http -> 80。
+        - name: hub-keycloak-http
+          port: 80
+{{- end }}

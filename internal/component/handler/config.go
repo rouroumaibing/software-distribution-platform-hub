@@ -67,10 +67,10 @@ func (h *ComponentConfigHandler) Upsert(c *gin.Context) {
 	in.ComponentID = componentID
 	in.Key = c.Param("key")
 
-	// changedBy 从鉴权中间件塞进 context 里取(dev 模式下是 dev user)。
-	var changedBy *uuid.UUID
-	if id, ok := middleware.CurrentUserID(c); ok {
-		changedBy = &id
+	// changedBy 取 token `sub`（§5.3）—— D3 之后没有本地用户 id 可用。
+	var changedBy *string
+	if sub, ok := middleware.CurrentSubject(c); ok {
+		changedBy = &sub
 	}
 	if err := h.svc.Upsert(&in, changedBy); err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)
@@ -101,9 +101,9 @@ func (h *ComponentConfigHandler) Delete(c *gin.Context) {
 		common.Fail(c, http.StatusNotFound, err)
 		return
 	}
-	var changedBy *uuid.UUID
-	if id, ok := middleware.CurrentUserID(c); ok {
-		changedBy = &id
+	var changedBy *string
+	if sub, ok := middleware.CurrentSubject(c); ok {
+		changedBy = &sub
 	}
 	if err := h.svc.Delete(cfg.ID, changedBy); err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)

@@ -30,6 +30,13 @@ func (f *fakeTreeLookup) ServiceTreeIDByOrg(orgID uuid.UUID) (uuid.UUID, error) 
 	return f.treeID, f.err
 }
 
+// ServiceTreeExists 满足扩展后的 ServiceTreeLookup 接口（D-02）。本文件的既有
+// 测试只覆盖 ListByOrg，不走到 Create，故这里恒返回 true（树存在）即可，不影响
+// 既有断言；Create 的拒绝路径由 create_test.go 的独立 fake 覆盖。
+func (f *fakeTreeLookup) ServiceTreeExists(treeID uuid.UUID) (bool, error) {
+	return true, nil
+}
+
 type fakeListingStore struct {
 	gotTreeID uuid.UUID
 	gotPaging common.Pagination

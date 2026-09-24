@@ -1,24 +1,16 @@
 package middleware
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 
-	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/service"
 )
 
-// contextKeyUserID is where UserContext stashes the resolved local user's
-// ID; handlers read it via CurrentUserID(c). It is used for the component
-// owner-override (components.owner_user is a uuid) and for the legacy V1
-// binding column; it is NOT the RBAC subject any more (see contextKeySubject).
-const contextKeyUserID = "auth.userID"
-
-// contextKeySubject is the RBAC subject: the Keycloak `sub` claim, or the
-// dev pseudo-subject when auth is disabled. Per ACCOUNT-PERMISSION-MODEL §5.3
-// bindings key on `sub` (stable, immutable), never on the local users.id.
+// contextKeySubject is the RBAC subject: the Keycloak `sub` claim, or the dev
+// pseudo-subject when auth is disabled. Per ACCOUNT-PERMISSION-MODEL §5.3
+// bindings key on `sub` (stable, immutable), never on a local row id — and
+// since D3 hub keeps no user table at all (§2.2), it is the *only* identity
+// key the system has.
 const contextKeySubject = "auth.subject"
 
 // contextKeyPreferredUsername is the display name, for audit trails.
@@ -36,33 +28,27 @@ const contextKeyGroups = "auth.groups"
 // dimension, which is why orgs are kept out of subject_id (§5.3).
 const contextKeyOrgs = "auth.orgs"
 
-// DevSubject is the pseudo-subject used when auth is disabled (dev mode). It
-// matches the KeycloakID the dev user is provisioned under, so dev bindings
-// created against it resolve.
+// DevSubject is the pseudo-subject used when auth is disabled (dev mode).
 const DevSubject = "dev"
 
-// UserContext must run after Authenticator.Middleware(). It resolves the
-// verified Keycloak identity to a local users row, auto-provisioning one
-// on first login (see UserService.GetOrProvisionByKeycloakID) so nobody
-// needs a manual "create my account" step after signing in via SSO. It also
-// records the RBAC subject (`sub`) separately from the local user id so the
-// authorization path keys on the stable Keycloak identity (§5.3 / §12 D3),
-// and derives the org dimension from the same `groups` claim (§2.3).
-func UserContext(userSvc *service.UserService) gin.HandlerFunc {
+// UserContext must run after Authenticator.Middleware(). It turns the verified
+// Keycloak claims into the three things the §4 authorization chain needs: the
+// RBAC subject (`sub`, §5.3), the display name (audit only) and the group /
+// org dimensions (§7 / §2.3).
+//
+// It deliberately touches no database. Before D3 this middleware ran a
+// get-or-provision write against a local `users` table on **every** request;
+// hub is now stateless with respect to identity (§2.2) and reads the subject
+// straight out of the token, so an authenticated request costs zero identity
+// writes and dev mode is a pure constant — not a row that has to exist first.
+func UserContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, exists := c.Get(contextKeyClaims)
 		if !exists {
 			// Authenticator didn't run — dev mode (auth disabled) or a public
-			// route. Provision a fixed dev user so downstream handlers (and
+			// route. Stamp the fixed dev subject so downstream handlers (and
 			// RequirePermission, when auth is on but claims are missing) have a
-			// resolved identity to work with.
-			user, err := userSvc.GetOrProvisionByKeycloakID(DevSubject, "dev@local", "Dev User")
-			if err != nil {
-				common.Fail(c, http.StatusInternalServerError, err)
-				c.Abort()
-				return
-			}
-			c.Set(contextKeyUserID, user.ID)
+			// stable identity to work with.
 			c.Set(contextKeySubject, DevSubject)
 			c.Set(contextKeyPreferredUsername, "Dev User")
 			// No claims ⇒ no org dimension. Setting it explicitly keeps
@@ -74,14 +60,6 @@ func UserContext(userSvc *service.UserService) gin.HandlerFunc {
 		}
 		claims := raw.(keycloakClaims)
 
-		user, err := userSvc.GetOrProvisionByKeycloakID(claims.Subject, claims.Email, claims.PreferredUsername)
-		if err != nil {
-			common.Fail(c, http.StatusInternalServerError, err)
-			c.Abort()
-			return
-		}
-
-		c.Set(contextKeyUserID, user.ID)
 		c.Set(contextKeySubject, claims.Subject)
 		c.Set(contextKeyPreferredUsername, claims.PreferredUsername)
 		c.Set(contextKeyGroups, claims.Groups)
@@ -90,20 +68,10 @@ func UserContext(userSvc *service.UserService) gin.HandlerFunc {
 	}
 }
 
-// CurrentUserID reads the resolved local user ID set by UserContext.
-// Returns uuid.Nil, false if UserContext hasn't run on this route.
-func CurrentUserID(c *gin.Context) (uuid.UUID, bool) {
-	raw, exists := c.Get(contextKeyUserID)
-	if !exists {
-		return uuid.Nil, false
-	}
-	id, ok := raw.(uuid.UUID)
-	return id, ok
-}
-
 // CurrentSubject reads the RBAC subject (the Keycloak `sub`, or the dev
-// pseudo-subject). Returns "", false if UserContext hasn't run. This — not
-// CurrentUserID — is what role bindings key on (§5.3).
+// pseudo-subject). Returns "", false if UserContext hasn't run or the token
+// carried an empty `sub`. This is the single identity key in the system:
+// bindings, ownership rows and every audit stamp resolve from it (§5.3).
 func CurrentSubject(c *gin.Context) (string, bool) {
 	raw, exists := c.Get(contextKeySubject)
 	if !exists {
@@ -141,8 +109,8 @@ func CurrentGroups(c *gin.Context) []string {
 // CurrentOrgs reads the org aliases (no `/org:` prefix) derived from the
 // token's groups claim. Returns nil when the subject belongs to no
 // organization — which includes dev mode and the current realm, where no
-// groups exist yet. Note this is NOT the same as an error: the ownership
-// decision treats "no orgs" as a normal state (§3).
+// `/org:<slug>` groups exist yet. Note this is NOT the same as an error: the
+// ownership decision treats "no orgs" as a normal state (§3).
 func CurrentOrgs(c *gin.Context) []string {
 	raw, exists := c.Get(contextKeyOrgs)
 	if !exists {

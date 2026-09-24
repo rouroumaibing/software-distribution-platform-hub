@@ -40,8 +40,9 @@ type Environment struct {
 	AccessConfig EnvAccessConfig `gorm:"serializer:json;type:text" json:"accessConfig,omitempty"`
 
 	// Status is the环境状态机 (§7.12.6): unconfigured | configured_unverified |
-	// verified | failed.
-	Status string `gorm:"size:16;not null;default:unconfigured" json:"status"`
+	// verified | failed. size:32 — "configured_unverified" is 21 chars; size:16
+	// silently truncated it (SQLSTATE 22001) on every key-field-change rollback.
+	Status string `gorm:"size:32;not null;default:unconfigured" json:"status"`
 
 	LastTestAt     *time.Time `json:"lastTestAt,omitempty"`
 	LastTestResult string     `gorm:"type:text" json:"lastTestResult,omitempty"`

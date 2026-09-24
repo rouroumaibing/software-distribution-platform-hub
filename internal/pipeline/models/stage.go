@@ -49,10 +49,11 @@ type PipelineStage struct {
 	// 结果是 console 编排页的阶段「并行/串行」开关无处落库 —— 只能做成刷新即失效的
 	// 装饰控件。本字段补的是"存得下、读得回"这一半，让开关变成真数据。
 	//
-	// ⚠️ 边界（刻意如此，勿误读为已完成）：Serial 的**调度行为**仍未实现 —— runner
-	// 侧 buildSpec 只为**跨阶段**派生 DependsOn，不生成同阶段串行链（backlog C-06）。
-	// 该字段当前只做 API ↔ DB 往返，**不改 runner 派发**：serial 阶段里的子任务在
-	// runner 侧仍会并发启动。先把契约对齐、避免 UI 撒谎，行为落地单独排期。
+	// 边界（2026-09-23 起完整）：Serial 的**调度行为已落地** —— hub 侧 buildSpec
+	// （internal/run/service）为 serial 阶段内任务按模板顺序派生「紧邻前驱」
+	// DependsOn 链（跨阶段推导照旧叠加；调用方手写 DependsOn 完全优先），runner
+	// 按依赖 DAG 执行即呈先后串行；parallel 阶段不派生阶段内依赖（backlog C-06
+	// 闭口，单测见 pipeline_run_serial_test.go）。
 	//
 	// 取值小写（parallel/serial）与 API 契约和原型对齐；DATA-MODEL §6.4-① 的草案
 	// ALTER 用的是 'Parallel'（首字母大写），本次以**面向客户端的 API 契约**为准统一

@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/cascade"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/component/models"
@@ -44,6 +45,10 @@ type ComponentService struct {
 	bindingRepo       *permbrepo.BindingRepository
 	componentRoleRepo *permbrepo.ComponentRoleRepository
 	runCounter        ActiveRunCounter
+	// cascader 是可选的域内级联删除器（DELETE-CONTRACT §6.4 #3/#4/#5/#10）。
+	// 用 setter 注入而非构造参数：8 处既有测试用 4 参构造，改签名会全部波及；
+	// 且级联器是"装配增强"，nil 时行为退回单表软删（脱库单测路径）。
+	cascader *cascade.Deleter
 }
 
 func NewComponentService(
@@ -58,6 +63,12 @@ func NewComponentService(
 		componentRoleRepo: componentRoleRepo,
 		runCounter:        runCounter,
 	}
+}
+
+// WithCascade 装配域内级联删除器（main.go 在 DB 就绪后调用）。
+func (s *ComponentService) WithCascade(d *cascade.Deleter) *ComponentService {
+	s.cascader = d
+	return s
 }
 
 func (s *ComponentService) Create(c *models.Component) error {
@@ -80,8 +91,8 @@ func (s *ComponentService) bindOwner(c *models.Component) error {
 	}
 	var subjectType, subjectID string
 	switch {
-	case c.OwnerUser != nil:
-		subjectType, subjectID = "user", c.OwnerUser.String()
+	case c.OwnerSub != nil:
+		subjectType, subjectID = "user", *c.OwnerSub
 	case c.OwnerGroup != nil:
 		subjectType, subjectID = "group", *c.OwnerGroup
 	default:
@@ -125,9 +136,17 @@ func (s *ComponentService) Update(id uuid.UUID, c *models.Component) error {
 // Delete refuses to drop a component that still has an in-flight run (the only
 // hard rule from DELETE-CONTRACT §6.4 #6): deleting while a publish is running
 // would orphan an in-progress Job. Historical runs (Succeeded/Failed/Cancelled)
-// do not block. The component is soft-deleted (Base.DeletedAt); its child
-// pipelines/environments are managed by their own lifecycles, not cascade
-// deleted here. The rejection carries a structured reasons list for the console.
+// do not block. The rejection carries a structured reasons list for the console.
+//
+// 子资源处理（§6.4）：装配了 cascader 时走**域内级联**（同一事务内软删
+// pipelines/stages/task_templates、硬删 environments/configs/bindings、给
+// artifacts 打 pending_deletion+expires_at 清理标记）；未装配时退回旧行为——
+// 只软删 component 自身（脱库单测与无 DB 装配路径）。
+//
+// 残余竞态（如实记录）：活跃运行判定在本方法、级联在事务内，两者之间纳秒级
+// 窗口里新起的 run 不会被本判定看到。完全关掉它需要把 run 计数也放进级联事务
+// （run repo 支持 tx 绑定），当前判定为不值得：这个窗口是毫秒级偶发，后果是
+// "run 挂在软删组件上继续跑完"（历史 run 本就允许），不是孤儿 Job。
 func (s *ComponentService) Delete(id uuid.UUID) error {
 	if s.runCounter != nil {
 		n, err := s.runCounter.CountActiveByComponent(id, activePhases)
@@ -139,6 +158,9 @@ func (s *ComponentService) Delete(id uuid.UUID) error {
 				"component still has in-progress runs; terminate them before deleting",
 				fmt.Sprintf("%d 条运行仍在进行中（Pending/Running/WaitingApproval），请先终止相关流水线运行", n))
 		}
+	}
+	if s.cascader != nil {
+		return s.cascader.DeleteComponentSubtree(id)
 	}
 	return s.repo.Delete(id)
 }

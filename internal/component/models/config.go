@@ -20,11 +20,15 @@ type ComponentConfig struct {
 	IsSecret  bool   `gorm:"not null;default:false" json:"isSecret"`
 	SecretRef string `gorm:"size:128" json:"secretRef,omitempty"`
 
-	Description string     `json:"description"`
-	CreatedBy   *uuid.UUID `gorm:"type:uuid" json:"createdBy,omitempty"`
-	UpdatedBy   *uuid.UUID `gorm:"type:uuid" json:"updatedBy,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	Description string `json:"description"`
+	// CreatedBy / UpdatedBy carry the author's RBAC subject (the Keycloak
+	// `sub`, §5.3) rather than a local user id: hub keeps no user table (D3),
+	// so there is no local id left to record. Both columns were `uuid` until
+	// migration 0015 converted them to text.
+	CreatedBy *string   `gorm:"size:128" json:"createdBy,omitempty"`
+	UpdatedBy *string   `gorm:"size:128" json:"updatedBy,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 func (ComponentConfig) TableName() string { return "component_configs" }
@@ -40,13 +44,15 @@ type ComponentConfigHistory struct {
 	// (DELETE-CONTRACT §6.6-2 / B-14) so that deleting an environment no
 	// longer 500s on existing history rows, and so a deleted environment's
 	// audit rows stay readable — "alpha（已删除）" instead of a dangling uuid.
-	EnvironmentKey string     `gorm:"size:64" json:"environmentKey,omitempty"`
-	Key            string     `gorm:"size:128;not null" json:"key"`
-	Action         string     `gorm:"size:16;not null" json:"action"`
-	OldValue       string     `gorm:"type:text" json:"oldValue,omitempty"`
-	NewValue       string     `gorm:"type:text" json:"newValue,omitempty"`
-	ChangedBy      *uuid.UUID `gorm:"type:uuid" json:"changedBy,omitempty"`
-	ChangedAt      time.Time  `gorm:"not null;default:now()" json:"changedAt"`
+	EnvironmentKey string `gorm:"size:64" json:"environmentKey,omitempty"`
+	Key            string `gorm:"size:128;not null" json:"key"`
+	Action         string `gorm:"size:16;not null" json:"action"`
+	OldValue       string `gorm:"type:text" json:"oldValue,omitempty"`
+	NewValue       string `gorm:"type:text" json:"newValue,omitempty"`
+	// ChangedBy is the author's RBAC subject (§5.3) — text since 0015, for the
+	// same reason as ComponentConfig.CreatedBy above.
+	ChangedBy *string   `gorm:"size:128" json:"changedBy,omitempty"`
+	ChangedAt time.Time `gorm:"not null;default:now()" json:"changedAt"`
 }
 
 func (ComponentConfigHistory) TableName() string { return "component_config_history" }

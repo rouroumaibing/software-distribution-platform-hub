@@ -26,7 +26,7 @@ type fakeChecker struct {
 	err            error
 }
 
-func (f *fakeChecker) HasPermission(componentID, userID uuid.UUID, subject string, groups []string, permission string) (bool, error) {
+func (f *fakeChecker) HasPermission(componentID uuid.UUID, subject string, groups []string, permission string) (bool, error) {
 	f.gotComponentID = componentID
 	f.gotSubject = subject
 	return f.allowed, f.err
@@ -51,15 +51,17 @@ func (l *fakeLocator) ComponentOfRun(id uuid.UUID) (uuid.UUID, error) {
 }
 
 // exercise mounts req behind RequirePermission on a throwaway router and
-// returns the response. A uuid.Nil identity means "nothing on context".
-func exercise(t *testing.T, req Requirement, loc Locator, checker PermissionChecker, userID uuid.UUID, pathValue string) *httptest.ResponseRecorder {
+// returns the response. A uuid.Nil subjectSeed means "nothing on context";
+// otherwise a subject is stamped so the middleware has an identity to work
+// with. The concrete value is irrelevant — these tests are about *which
+// component* the binding is checked against, not about who is asking.
+func exercise(t *testing.T, req Requirement, loc Locator, checker PermissionChecker, subjectSeed uuid.UUID, pathValue string) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	identity := func(c *gin.Context) {
-		if userID != uuid.Nil {
-			c.Set(contextKeyUserID, userID)
-			c.Set(contextKeySubject, "sub-"+userID.String())
+		if subjectSeed != uuid.Nil {
+			c.Set(contextKeySubject, "sub-"+subjectSeed.String())
 		}
 		c.Next()
 	}

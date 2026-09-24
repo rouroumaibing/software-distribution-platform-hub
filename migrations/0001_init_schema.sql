@@ -13,22 +13,33 @@ create extension if not exists pgcrypto; -- for gen_random_uuid()
 create table orgs (
     id          uuid primary key default gen_random_uuid(),
     name        varchar(128) not null,
-    slug        varchar(64)  not null unique, -- 用于 URL / namespace 命名
+    slug        varchar(64)  not null, -- 用于 URL / namespace 命名
     created_at  timestamptz  not null default now(),
     updated_at  timestamptz  not null default now(),
     deleted_at  timestamptz
 );
+-- ⚠️ 唯一性一律写成**显式命名的唯一索引** `idx_<table>_<column>`，不要用内联 `unique`。
+--   原因（2026-09-23 在真实 Postgres 16 上实测）: 内联 `unique` 建出的是**唯一约束**
+--   （名字自动生成为 `<table>_<column>_key`），而 GORM 模型声明的是 `uniqueIndex`
+--   （索引名 `idx_<table>_<column>`）。两者形状不一致时，AutoMigrate 的
+--   `MigrateColumnUnique` 会判定"库里有个模型不要的唯一约束"，去 drop 它期望的名字
+--   `uni_<table>_<column>` —— 该名字并不存在，于是整个 AutoMigrate 直接失败、
+--   **hub 起不来**（`constraint "uni_orgs_slug" of relation "orgs" does not exist`）。
+--   本文件下面三处（orgs.slug / service_trees.org_id / targets.name）已按此规矩修正。
+create unique index idx_orgs_slug on orgs(slug);
 
 -- ---------------------------------------------------------------------
 -- 2. 服务树(每个 org 一棵,存在感很低,主要用于承载根节点元信息)
 -- ---------------------------------------------------------------------
 create table service_trees (
     id          uuid primary key default gen_random_uuid(),
-    org_id      uuid not null unique references orgs(id) on delete cascade,
+    org_id      uuid not null references orgs(id) on delete cascade,
     name        varchar(128) not null default 'default',
     created_at  timestamptz  not null default now(),
     updated_at  timestamptz  not null default now()
 );
+-- 1:1 with Org —— 唯一索引名与模型 `uniqueIndex` 对齐（见上文 ⚠️）
+create unique index idx_service_trees_org_id on service_trees(org_id);
 
 -- ---------------------------------------------------------------------
 -- 3. 服务(业务服务单元,比如"交易服务"、"用户中心")
@@ -45,6 +56,8 @@ create table services (
     deleted_at       timestamptz,
     unique (service_tree_id, key)
 );
+-- 复合 `unique (...)` 保留为约束：GORM 的 MigrateColumnUnique 是**逐列**判断，
+-- 复合约束不会让任何单列被报成 Unique，故不触发上面的 drop 逻辑（已实测）。
 create index idx_services_tree on services(service_tree_id) where deleted_at is null;
 
 -- ---------------------------------------------------------------------
@@ -73,7 +86,7 @@ create index idx_components_service on components(service_id) where deleted_at i
 -- ---------------------------------------------------------------------
 create table targets (
     id             uuid primary key default gen_random_uuid(),
-    name           varchar(128) not null unique,
+    name           varchar(128) not null,
     vendor         varchar(64)  not null, -- aliyun / tencent / aws / self-hosted ...
     region         varchar(64)  not null,
     status         varchar(32)  not null default 'offline', -- online / offline
@@ -82,6 +95,10 @@ create table targets (
     created_at     timestamptz  not null default now(),
     updated_at     timestamptz  not null default now()
 );
+-- 唯一索引名与模型 `uniqueIndex` 对齐（见上文 ⚠️）。历史库（表名还是 clusters 时
+-- 建库）会留下 `idx_clusters_name`，0007 只改表名不改这个索引名 —— 那种库里
+-- AutoMigrate 会**新增**一个 `idx_targets_name`，属加法、不会崩。
+create unique index idx_targets_name on targets(name);
 
 -- ---------------------------------------------------------------------
 -- 6. 环境(挂在组件下,如 beta/alpha/gamma/prod,绑定到具体目标+命名空间)

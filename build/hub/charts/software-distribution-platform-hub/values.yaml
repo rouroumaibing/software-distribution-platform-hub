@@ -24,6 +24,10 @@ resources:
   resources_mem_requests: 128Mi
   resources_mem_limits: 512Mi
 
+# 凭据加密（DATA-MODEL §9.7 / Task#7）：32 字节 AES-256 密钥，置空 => 凭据明文落库（dev）。
+# ⚠️ 一旦用某密钥写过凭据，换密钥即无法解密——设定后不可换。生产用 secretKeyRef 注入。
+credentialEncryptionKey: ""
+
 # gateway 配置须与 runner chart 成对修改
 gateway:
   path: /gateway/ws
@@ -37,6 +41,16 @@ auth:
   keycloakIssuerUrl: ""
   # 对应 console 的 public client（realm 预置里的 sdp-console）；与 cmd/hub 的 KEYCLOAK_CLIENT_ID 默认值一致。
   keycloakClientId: "sdp-console"
+  # hub 用 sdp-backend service account 调 Keycloak Admin API（org 载体组预置）。
+  # 取值须与 realm 预置里 sdp-backend 的 secret 字面量一致（keycloak-realm-configmap.yaml）。
+  # 置空 => issuer 打开时也只告警不建组（cmd/hub main()）。生产改 valueFrom secretKeyRef。
+  adminClientSecret: ""
+  # dev-only 脚手架：issuer 走自签证书（本地 gen-certs.sh 的 sdp-local-ca）时，挂该 secret 的
+  # ca.crt 到 /etc/sdp-ca 并设 SSL_CERT_FILE。生产用公共 CA，留空。
+  trustedCASecret: ""
+  # dev-only 脚手架：hub 解析不到 issuer 域名时，把 <gatewayRoute.hostname> 指到该 IP
+  # （本地 = kind 节点 IP，:8443 经 extraPortMappings -> nodePort 30443）。生产用真 DNS，留空。
+  resolveHostIp: ""
 
 # hub 仅支持 postgres，实例需先就绪（P0 由 deploy/manifests/10-postgres.yaml 提供，命名空间 sdp-workflow）
 postgres:
@@ -64,6 +78,15 @@ packageVersions:
   hub: v0.0.1
   runner: v0.0.1
 
+# 对外路由（Envoy Gateway / Gateway API）：本 chart 只带 keycloak 的 HTTPRoute
+# （templates/keycloak-httproute.yaml，/keycloak 前缀 -> hub-keycloak-http:80）。
+# Gateway 级资源（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（根目录 deploy/，
+# 不随仓分发）——本 chart 按名字引用，保持独立可装；名字可 helm --set gatewayRoute.name=... 覆盖。
+gatewayRoute:
+  enabled: true
+  name: sdp-gateway
+  hostname: www.sdpworkflow.com
+
 # Keycloak 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork），
 # 已 vendor 进 charts/keycloak（固定版本，随 hub 一并安装）；console 本期仍 authDisabled，keycloak 先随 hub 起好。
 # 值结构透传 keycloakx chart（子 chart 作用域即 keycloak.*）；DB 接本平台 postgres（sdp-workflow）。
@@ -77,13 +100,33 @@ keycloak:
   # 是**两个 realm 的两个账号**（master vs sdp），此处刻意用同一口令，dev 只记一套。
   # 生产改 KEYCLOAK_ADMIN_PASSWORD 为 valueFrom secretKeyRef（existingSecret）。
   image:
-    repository: quay.io/keycloak/keycloak
+    # 走本地 registry（deploy-local.sh 预推）：kind 节点直拉 quay.io 实测 6 分钟不完成。
+    repository: localhost:5000/keycloak/keycloak
     tag: "26.7.4"
+  # 对外前端地址（KC26 hostname v2 支持完整 URL，含 scheme/port/路径）：设了它 issuer 与所有
+  # 前端 URL 钉死。⚠️ 路径必须带上 http.relativePath（实测 KC 不会自动把 context path 追加到
+  # KC_HOSTNAME 后面：hostname 不带 /keycloak 时 issuer 通告成 .../realms/sdp，网关路由 /keycloak
+  # 前缀下不可达）。取值例 https://www.sdpworkflow.com:8443/keycloak，须与 gatewayRoute.hostname +
+  # 浏览器实际访问端口 + console/hub 两侧 issuer 三方一致。留空 => 由 proxy xforwarded 推导
+  # ——网关 listener 是 8443 时推导值正确，但显式钉死不依赖转发头，仍建议设置。
+  hostname: ""
   extraEnv: |
     - name: KEYCLOAK_ADMIN
       value: admin
     - name: KEYCLOAK_ADMIN_PASSWORD
       value: "sdp@12345"
+    # Keycloak 26 生产模式强制 hostname 校验（"hostname is not configured"启动失败）。
+    # dev 关掉：前端地址由 proxy.mode=xforwarded 的 X-Forwarded-* 推导（见下方 proxy 注释）。
+    # 生产必须改回：设 KC_HOSTNAME=<对外地址> 并去掉本变量。
+    - name: KC_HOSTNAME_STRICT
+      value: "false"
+    {{- if .Values.hostname }}
+    # issuer 钉死对外地址（完整 URL 含端口）——不依赖 X-Forwarded-Port 推导。
+    # 注意：keycloakx 子 chart 的 tpl 上下文是子 chart 的 .Values（= 父 values 的 keycloak. 段），
+    # 故此处引用 .Values.hostname 而非 .Values.keycloak.hostname。
+    - name: KC_HOSTNAME
+      value: {{ .Values.hostname | quote }}
+    {{- end }}
   # 挂载项目 realm（templates/keycloak-realm-configmap.yaml）并在启动时导入。
   # extraVolumes/extraVolumeMounts 为 keycloakx 的 string 类型（经 tpl 注入 StatefulSet volumes/volumeMounts）。
   extraVolumes: |
@@ -110,38 +153,24 @@ keycloak:
     password: sdp
   serviceAccount:
     create: false
-  # 对外入口：与 console 同域名、路径前缀 /keycloak，由 nginx-ingress 按「最长前缀」路由，不干扰 console 的 /。
-  # 后端为 HTTP（keycloak svc 端口名 http：80 -> 8080）；console ingress 上的 backend-protocol=HTTPS 是它自己的注记，不会外溢到本 Ingress。
-  # TLS 复用 console 的 ingress 证书 secret（同一 host 共用一张证书；改名需两个 chart 同步改）。
-  # ⚠️ 生产建议给管理台加来源限制：nginx.ingress.kubernetes.io/whitelist-source-range。
+  # 对外入口：ingress-nginx 已废弃，路由改走 Envoy Gateway —— 本 chart 的
+  # templates/keycloak-httproute.yaml（/keycloak 前缀 -> hub-keycloak-http:80）。
+  # 这里把 keycloakx 子 chart 自带的 Ingress 关掉（它渲染的是 Ingress 资源，无 controller 承接）。
   ingress:
-    enabled: true
-    ingressClassName: nginx
-    servicePort: http
-    annotations:
-      nginx.ingress.kubernetes.io/proxy-buffer-size: 128k
-    rules:
-      - host: www.sdpworkflow.com
-        paths:
-          - path: /keycloak
-            pathType: Prefix
-    tls:
-      - hosts:
-          - www.sdpworkflow.com
-        secretName: console-ingress-tls
-  # 反向代理置于 nginx-ingress 之后。⚠️ mode 必须是 xforwarded，不是 keycloakx 的默认值 forwarded：
+    enabled: false
+  # 反向代理置于 Envoy Gateway 之后。⚠️ mode 必须是 xforwarded，不是 keycloakx 的默认值 forwarded：
   #   forwarded  => 解析 RFC 7239 的 `Forwarded` 头；xforwarded => 解析 `X-Forwarded-*` 头。
-  #   nginx-ingress（本仓 05-ingress-nginx.yaml，ConfigMap data:null 即原版）只发
-  #   X-Forwarded-For / Proto / Host / Port，不发 RFC 7239 `Forwarded`。
+  #   Envoy Gateway 只发 X-Forwarded-For / Proto / Host / Port，不发 RFC 7239 `Forwarded`
+  #   （与原 nginx-ingress 行为一致），故 xforwarded 的取法不受影响。
   #   用 forwarded 会解析不到原 scheme/host => 令牌 iss 被推导成集群内地址，hub 校验必然失败。
   # 置为 xforwarded 后 keycloak 由 X-Forwarded-* 推导前端地址，令牌 iss 即
-  #   https://<host><relativePath>/realms/sdp（无需再设 KC_HOSTNAME；相对路径已与 ingress 前缀一致）。
+  #   https://<host><relativePath>/realms/sdp（无需再设 KC_HOSTNAME；相对路径已与网关路由前缀一致）。
   # 另：不设 proxy-headers 时经代理访问会 403（origin 校验），故此项必设。
   proxy:
     enabled: true
     mode: xforwarded
   # 相对路径刻意不用 Keycloak 默认的 /auth：console 是 SPA，其 OIDC 回调路由就是 /auth/callback
-  # （console/src/router/index.ts）。若 keycloak 占住 /auth 前缀，nginx-ingress 会按最长前缀把
+  # （console/src/router/index.ts）。若 keycloak 占住 /auth 前缀，网关会按最长前缀把
   # /auth/callback 路由到 keycloak，登录回调直接失败。故改用专属前缀 /keycloak（console 侧零占用）——
   # 结构性隔离，不依赖路由优先级。改此处须同步 console 侧 issuer（auth.keycloakIssuerUrl）。
   http:

@@ -126,7 +126,7 @@ var (
 	reExec        = regexp.MustCompile(`(?m)^\s*exec:`)
 	reCurrentCtx  = regexp.MustCompile(`(?m)^\s*current-context:\s*["']?([^\s"']+)["']?`)
 	reNamespace   = regexp.MustCompile(`(?m)^\s*namespace:\s*["']?([^\s"']+)["']?`)
-	reHasClusters = regexp.MustCompile(`^\s*clusters:`) // allow leading whitespace
+	reHasClusters = regexp.MustCompile(`(?m)^\s*clusters:`) // multiline: "clusters:" may appear anywhere at line start
 )
 
 func parseKubeconfig(raw string) KubeParseResult {

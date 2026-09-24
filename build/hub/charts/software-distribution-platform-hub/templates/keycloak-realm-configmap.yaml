@@ -44,8 +44,7 @@ data:
             "composite": true,
             "composites": {
               "realm": [
-                "offline_access",
-                "uma_authorization"
+                "offline_access"
               ],
               "client": {
                 "account": [
@@ -101,10 +100,12 @@ data:
           "bearerOnly": false,
           "consentRequired": false,
           "redirectUris": [
-            "https://www.sdpworkflow.com/*"
+            "https://www.sdpworkflow.com/*",
+            "https://www.sdpworkflow.com:8443/*"
           ],
           "webOrigins": [
-            "https://www.sdpworkflow.com"
+            "https://www.sdpworkflow.com",
+            "https://www.sdpworkflow.com:8443"
           ],
           "baseUrl": "/keycloak/realms/sdp/account",
           "protocol": "openid-connect",
@@ -214,7 +215,7 @@ data:
             {
               "type": "password",
               "value": "sdp@12345",
-              "temporary": false
+              "temporary": true
             }
           ],
           "disableableCredentialTypes": [],
@@ -238,6 +239,12 @@ data:
           "realmRoles": [
             "default-roles-sdp"
           ],
+          "clientRoles": {
+            "realm-management": [
+              "query-groups",
+              "manage-users"
+            ]
+          },
           "notBefore": 0,
           "groups": []
         }

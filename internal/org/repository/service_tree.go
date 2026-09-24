@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
@@ -34,4 +36,20 @@ func (r *ServiceTreeRepository) ServiceTreeIDByOrg(orgID uuid.UUID) (uuid.UUID, 
 		return uuid.Nil, err
 	}
 	return st.ID, nil
+}
+
+// ServiceTreeExists reports whether a service tree row exists. A deleted tree
+// counts as non-existent (soft-delete aware), matching the FK semantics a
+// missing row would give. Used by catalog Create to reject a dangling
+// serviceTreeId before write (D-02).
+func (r *ServiceTreeRepository) ServiceTreeExists(treeID uuid.UUID) (bool, error) {
+	var st models.ServiceTree
+	err := r.DB.First(&st, "id = ?", treeID).Error
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return false, err
 }

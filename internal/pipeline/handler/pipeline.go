@@ -46,8 +46,8 @@ func (h *PipelineHandler) Create(c *gin.Context) {
 		common.Fail(c, http.StatusBadRequest, err)
 		return
 	}
-	if createdBy, ok := middleware.CurrentUserID(c); ok {
-		in.CreatedBy = createdBy.String()
+	if createdBy, ok := middleware.CurrentSubject(c); ok {
+		in.CreatedBy = createdBy
 	}
 	if err := h.svc.Create(&in); err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)

@@ -19,11 +19,17 @@ type Component struct {
 	Language      string    `gorm:"size:64" json:"language"`
 	Description   string    `json:"description"`
 
-	// Ownership (DATA-MODEL §7.4): drives the default approver for
-	// pipeline approvals. Exactly one of OwnerUser / OwnerGroup is set.
-	// Nullable so existing rows migrate cleanly; set on component create.
-	OwnerUser  *uuid.UUID `gorm:"type:uuid;index" json:"ownerUser,omitempty"`
-	OwnerGroup *string    `gorm:"size:128;index" json:"ownerGroup,omitempty"`
+	// Ownership (DATA-MODEL §7.4): drives the default approver for pipeline
+	// approvals. Exactly one of OwnerSub / OwnerGroup is set. Nullable so
+	// existing rows migrate cleanly; set on component create.
+	//
+	// OwnerSub holds the Keycloak `sub` (§5.3), not a local row id: hub keeps
+	// no user table (D3), so the owner is identified by the same stable subject
+	// every binding keys on. The column was `owner_user uuid` before D3;
+	// migration 0015 backfills it from users.keycloak_id and explicitly nulls
+	// the rows that cannot be mapped (with a warning query).
+	OwnerSub   *string `gorm:"size:128;index" json:"ownerSub,omitempty"`
+	OwnerGroup *string `gorm:"size:128;index" json:"ownerGroup,omitempty"`
 }
 
 func (Component) TableName() string { return "components" }

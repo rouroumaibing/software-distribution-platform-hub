@@ -55,7 +55,10 @@ func (h *PipelineRunHandler) Trigger(c *gin.Context) {
 	}
 	runs, err := h.svc.Trigger(pipelineID, &req)
 	if err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		// AbortWithError 归一化错误：缺失/软删的 pipeline (gorm.ErrRecordNotFound)
+		// 与明确的域错误都映射成正确状态码 (404 / 403 / 500)，不再一刀切 500
+		// (run 触发路径未补齐项 #1)。
+		common.AbortWithError(c, err)
 		return
 	}
 	common.Created(c, runs)
@@ -193,6 +196,33 @@ func (h *PipelineRunHandler) Progress(c *gin.Context) {
 	})
 }
 
+// StageProgress godoc
+// @Summary Per-stage progress of a pipeline run
+// @Description Aggregated stage rows (name/sequence/executionMode/status/done/total) derived on read from the run's TaskRuns; feeds console §7.6 stage cards.
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Router /runs/{id}/stage-progress [get]
+func (h *PipelineRunHandler) StageProgress(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	run, stages, err := h.svc.StageProgress(id)
+	if err != nil {
+		common.Fail(c, http.StatusNotFound, err)
+		return
+	}
+	common.OK(c, gin.H{
+		"run":    gin.H{"id": run.ID, "phase": run.Phase, "message": run.Message},
+		"stages": stages,
+	})
+}
+
 // Redispatch godoc
 // @Summary Re-deliver a pipeline run's spec to its target
 // @Description Re-enqueues a fresh dispatch job carrying the last payload for a run whose delivery is stuck (failed/dead) or unconfirmed. Succeeds even if the Runner is offline; the job is delivered on reconnect or by the sweeper. A run stuck in Failed is reset to Pending.
@@ -304,8 +334,8 @@ func (h *PipelineRunHandler) Approve(c *gin.Context) {
 
 	approver := req.Approver
 	if approver == "" {
-		if id, ok := middleware.CurrentUserID(c); ok {
-			approver = id.String()
+		if sub, ok := middleware.CurrentSubject(c); ok {
+			approver = sub
 		}
 	}
 
@@ -356,8 +386,8 @@ func (h *PipelineRunHandler) ControlRollout(c *gin.Context) {
 
 	operator := req.Operator
 	if operator == "" {
-		if id, ok := middleware.CurrentUserID(c); ok {
-			operator = id.String()
+		if sub, ok := middleware.CurrentSubject(c); ok {
+			operator = sub
 		}
 	}
 

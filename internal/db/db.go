@@ -85,13 +85,19 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&catalogmodels.Service{},
 		&componentmodels.Component{}, &componentmodels.ComponentConfig{}, &componentmodels.ComponentConfigHistory{},
 		&targetmodels.Target{},
+		// §9.9 / §9.5 接入编排：hub 侧 agent 操作台账（exec / install / upgrade）
+		// 及其流式输出分片（SSE 重放源，migration 0018）。
+		&targetmodels.AgentOp{}, &targetmodels.AgentOpLog{},
 		&environmentmodels.Environment{},
 		&credentialmodels.Credential{},
 		&environmentgroupmodels.EnvironmentGroup{},
 		&pipelinemodels.Pipeline{}, &pipelinemodels.PipelineStage{}, &pipelinemodels.PipelineTaskTemplate{}, &pipelinemodels.PipelineVersion{},
 		&artifactmodels.Artifact{},
 		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{}, &runmodels.PipelineApproval{},
-		&permmodels.Role{}, &permmodels.ComponentRoleBinding{}, &permmodels.User{},
+		// D3：不再有 `users` 表 —— hub 对身份无状态（ACCOUNT-PERMISSION-MODEL
+		// §2.2），主体一律取 token `sub`。Role 仍保留（V1 `roles` 表本身不在
+		// D3 的确认范围内，见 plans/UNIMPLEMENTED-MODULES-PLAN.md §14）。
+		&permmodels.Role{}, &permmodels.ComponentRoleBinding{},
 		&permmodels.PlatformRole{}, &permmodels.PlatformRoleBinding{}, &permmodels.ComponentRole{},
 		// ACCOUNT-PERMISSION-MODEL §3 / §5.1③ / §6 / §7.2 — the four tables
 		// that complete the permission model (2026-09-22 第八批).

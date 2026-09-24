@@ -11,8 +11,10 @@ func setupRouter(deps *Dependencies) *gin.Engine {
 	// 1. 每个请求先验证 Bearer token(签名/过期/issuer/azp),失败直接 401
 	api.Use(deps.Authenticator.Middleware())
 
-	// 2. 验证通过后,解析出对应的本地 User(首次登录自动创建)
-	api.Use(middleware.UserContext(deps.UserService))
+	// 2. 验证通过后,把 token 里的身份维度落进 context:
+	//    subject(`sub`,§5.3)/ 显示名(仅供审计)/ groups / orgs。
+	//    不落库 —— hub 不存用户表(§2.2 / D3),所以这里没有 UserService。
+	api.Use(middleware.UserContext())
 
 	// 3. 不需要按组件校验权限的路由(比如 Org/Target 管理)直接挂
 	deps.OrgHandler.RegisterRoutes(api)

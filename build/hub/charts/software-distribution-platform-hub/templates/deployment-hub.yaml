@@ -20,6 +20,15 @@ spec:
         app: {{ .Values.basic.component }}
         version: v1
     spec:
+      {{- if .Values.auth.resolveHostIp }}
+      # dev-only 脚手架：hub 所在集群解析不了 issuer 的对外域名（如本地 kind 没有公司 DNS），
+      # 把 <gatewayRoute.hostname> 指到给定 IP（本地 = kind 节点 IP，浏览器端口 :8443 经
+      # extraPortMappings -> nodePort 30443 -> envoy）。生产用真 DNS，本值留空即不渲染。
+      hostAliases:
+        - ip: {{ .Values.auth.resolveHostIp | quote }}
+          hostnames:
+            - {{ .Values.gatewayRoute.hostname | quote }}
+      {{- end }}
       containers:
         - name: container-1
           env:
@@ -35,6 +44,24 @@ spec:
               value: {{ .Values.auth.keycloakIssuerUrl | default "" | trimSuffix "/" | quote }}
             - name: KEYCLOAK_CLIENT_ID
               value: {{ .Values.auth.keycloakClientId | default "sdp-console" | quote }}
+            {{- if and .Values.auth.keycloakIssuerUrl .Values.auth.adminClientSecret }}
+            # hub 以 sdp-backend service account 调 Keycloak Admin API（org 载体组预置，
+            # cmd/hub main()：secret 缺失只告警、跳过组同步）。取值须与 realm 预置里
+            # sdp-backend 的 secret 字面量一致（keycloak-realm-configmap.yaml）。生产改 secretKeyRef。
+            - name: KEYCLOAK_ADMIN_CLIENT_SECRET
+              value: {{ .Values.auth.adminClientSecret | quote }}
+            {{- end }}
+            {{- if .Values.auth.trustedCASecret }}
+            # dev-only 脚手架：issuer 走自签证书（本地 gen-certs.sh 的 sdp-local-ca）时，
+            # 挂 CA 并用 SSL_CERT_FILE 替换 Go 系统信任池（crypto/x509 在 Linux 上读该变量）。
+            # 生产用公共 CA，留空即不渲染（也不影响 Go 默认池）。
+            - name: SSL_CERT_FILE
+              value: /etc/sdp-ca/ca.crt
+            {{- end }}
+            # 凭据加密（DATA-MODEL §9.7）：32 字节 AES-256 密钥；空 => 明文落库（dev）。
+            # ⚠️ 用某密钥写过凭据后换密钥即无法解密——设定后不可换。生产用 secretKeyRef。
+            - name: CREDENTIAL_ENCRYPTION_KEY
+              value: {{ .Values.credentialEncryptionKey | default "" | quote }}
             - name: DB_DSN
               value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.pwd }}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.dbname }}?sslmode=disable"
             - name: LOG_LEVEL
@@ -46,7 +73,7 @@ spec:
             - name: ARTIFACT_STORE_PUBLIC_URL
               value: {{ .Values.artifact.publicUrl }}
             # 版本矩阵（CM package-versions，模板 configmap-package-versions.yaml）：
-            # 供接入管理展示与 runner 安装/升级取值；hub 侧端点 GET /package-versions 待实现
+            # 供接入管理展示与 runner 安装/升级取值
             - name: PACKAGE_VERSION_CONSOLE
               valueFrom:
                 configMapKeyRef:
@@ -78,10 +105,24 @@ spec:
           volumeMounts:
             - name: artifacts
               mountPath: {{ .Values.artifact.localRoot }}
+            {{- if .Values.auth.trustedCASecret }}
+            - name: sdp-ca
+              mountPath: /etc/sdp-ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: artifacts
           persistentVolumeClaim:
             claimName: {{ .Values.basic.component }}-artifacts
+        {{- if .Values.auth.trustedCASecret }}
+        - name: sdp-ca
+          secret:
+            secretName: {{ .Values.auth.trustedCASecret }}
+            items:
+              # gen-certs.sh 约定：console-tls 含 ca.crt / server.crt / server.key
+              - key: ca.crt
+                path: ca.crt
+        {{- end }}
       terminationGracePeriodSeconds: 30
       dnsPolicy: ClusterFirst
   strategy:

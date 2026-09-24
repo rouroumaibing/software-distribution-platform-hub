@@ -59,7 +59,12 @@ func (s *ComponentConfigService) envKeySnapshot(envID *uuid.UUID) string {
 // Upsert creates or updates a config key and writes an audit row. Secret
 // values never get logged into history in plaintext — only the fact that
 // a change happened.
-func (s *ComponentConfigService) Upsert(cfg *models.ComponentConfig, changedBy *uuid.UUID) error {
+//
+// changedBy is the author's RBAC subject (the Keycloak `sub`, §5.3). It is nil
+// only when the request carried no identity at all: per D3 there is no local
+// user row left to fall back to, so the audit trail records the subject or
+// nothing — never a local uuid that no one can resolve back to a person.
+func (s *ComponentConfigService) Upsert(cfg *models.ComponentConfig, changedBy *string) error {
 	action := "update"
 	if cfg.ID == uuid.Nil {
 		action = "create"
@@ -83,8 +88,9 @@ func (s *ComponentConfigService) Upsert(cfg *models.ComponentConfig, changedBy *
 }
 
 // Delete removes a config key and writes a delete row to the audit trail,
-// capturing the last value as OldValue (masked when secret).
-func (s *ComponentConfigService) Delete(id uuid.UUID, changedBy *uuid.UUID) error {
+// capturing the last value as OldValue (masked when secret). changedBy is the
+// author's RBAC subject, same contract as Upsert.
+func (s *ComponentConfigService) Delete(id uuid.UUID, changedBy *string) error {
 	var old *models.ComponentConfig
 	old, err := s.repo.GetByID(id)
 	if err != nil {

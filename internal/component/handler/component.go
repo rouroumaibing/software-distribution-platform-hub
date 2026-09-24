@@ -40,9 +40,10 @@ func (h *ComponentHandler) Create(c *gin.Context) {
 		return
 	}
 	// §7.4: 未显式指定 owner 时，创建者即为 owner（默认审批人/管理员）。
-	if in.OwnerUser == nil && in.OwnerGroup == nil {
-		if uid, ok := middleware.CurrentUserID(c); ok {
-			in.OwnerUser = &uid
+	// owner 记的是 token `sub`（§5.3）—— D3 之后仓库里没有本地用户 id 可取。
+	if in.OwnerSub == nil && in.OwnerGroup == nil {
+		if sub, ok := middleware.CurrentSubject(c); ok {
+			in.OwnerSub = &sub
 		}
 	}
 	if err := h.svc.Create(&in); err != nil {

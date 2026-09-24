@@ -11,7 +11,6 @@ import (
 )
 
 var (
-	errNoUser    = errors.New("no authenticated user on context")
 	errNoSubject = errors.New("no RBAC subject on context")
 	errForbidden = errors.New("insufficient permission")
 	errNoParam   = errors.New("route has no resource id path parameter")
@@ -50,11 +49,12 @@ type Locator interface {
 // without a database (same motive as the service layer's narrow stores).
 // *permissionsvc.BindingService satisfies it.
 //
-// Both the local user id and the RBAC subject are passed: bindings key on the
-// stable Keycloak `sub` (§5.3), while the component owner-override still keys
-// on the local user UUID (components.owner_user). See ResolveComponentActions.
+// There is exactly one identity dimension: the RBAC subject (§5.3). D3 removed
+// the parallel "local user id" parameter — bindings, the component
+// owner-override (components.owner_sub) and every audit stamp now key on the
+// same `sub`, so there is nothing left for a second id to say.
 type PermissionChecker interface {
-	HasPermission(componentID, userID uuid.UUID, subject string, groups []string, permission string) (bool, error)
+	HasPermission(componentID uuid.UUID, subject string, groups []string, permission string) (bool, error)
 }
 
 // PlatformPermissionChecker is the platform-scoped sibling of
@@ -85,12 +85,6 @@ type Requirement struct {
 // permission per route rather than one global policy.
 func RequirePermission(checker PermissionChecker, loc Locator, req Requirement) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		userID, ok := CurrentUserID(c)
-		if !ok {
-			common.Fail(c, http.StatusUnauthorized, errNoUser)
-			c.Abort()
-			return
-		}
 		subject, ok := CurrentSubject(c)
 		if !ok {
 			common.Fail(c, http.StatusUnauthorized, errNoSubject)
@@ -112,7 +106,7 @@ func RequirePermission(checker PermissionChecker, loc Locator, req Requirement) 
 			return
 		}
 
-		allowed, err := checker.HasPermission(componentID, userID, subject, CurrentGroups(c), req.Permission)
+		allowed, err := checker.HasPermission(componentID, subject, CurrentGroups(c), req.Permission)
 		if err != nil {
 			// A failing lookup is an infrastructure problem, not a denial:
 			// answering 403 here would disguise an outage as "no permission"

@@ -21,6 +21,32 @@
 | `make clean PURGE_DOCS=1` | 同上，但**连 `docs/` 的 swaggo 生成物一起删**（删后 `make build` 必挂，需 `git checkout -- docs/` 恢复） |
 | `make clean-deep` | 本仓彻底清理（删生成物，同 `clean`）；不删下载依赖/工具链，删除范围严格限定在本仓目录内（不触碰仓库外的共享资源） |
 
+## 模块地图（`internal/`）
+
+| 模块 | 职责 |
+| --- | --- |
+| `artifact` / `cascade` | 制品库（上传/下载/GC）；跨资源级联删除契约（409 verdict） |
+| `catalog` / `component` / `pipeline` / `run` | 服务树、组件、流水线定义与运行（含 C-06 serial 调度派生、`GET /runs/:id/stage-progress` 按 `TaskRun.StageName` 聚合） |
+| `target` / `environment` / `environmentgroup` | 目标注册表（含 enroll-token、`agent_ops` 台账全链路：状态机 `queued→running→succeeded\|failed` + 派发 + SSE）、环境（§7.12 对接、test/exec）、环境分组 |
+| `credentials` | 凭据托管：AES-GCM 信封加密落库（`codec`，API 只回 `xxxSet`），`parse-kubeconfig` 结构化解析（拒绝 exec 插件） |
+| `keycloak` / `permission` / `middleware` | 身份域（org 组运行时预置 `EnsureGroup("/org:<slug>")`）、两层 RBAC 引擎、鉴权/审计中间件 |
+| `org` / `search` / `packageversion` / `gateway` | 组织（触发 KC 组预置）、⌘K 搜索后端、版本矩阵（`GET /package-versions`，读 `PACKAGE_VERSION_*`）、runner 出站回连 WS 网关 |
+| `db` / `config` / `common` | AutoMigrate（**只加不删**）、环境变量装配、响应壳/CRUD 泛型注册 |
+
+- **schema SSOT = AutoMigrate + `migrations/`**：列新增交给 AutoMigrate；删列/改名/列宽变更写 `migrations/*.sql`（幂等，现库需手工 `kubectl exec postgres -- psql` 执行）。
+- **agent op 全链路（2026-09-23 第十八批 §16.5）**：`exec` 创建即经 gateway WS 派发（`cmd/hub/agentop_dispatcher.go` 组装 payload；kubeconfig-access 环境在此解密凭据下发），runner `internal/agentops` 在目标集群建 Job 执行、`agent_op_status/log` 回传；输出落 `agent_op_logs`，SSE = `GET /agent-ops/:id/stream`（重放+增量），轮询兜底 `GET /agent-ops/:id`。`install` / `upgrade` **留守 queued 不派发**——执行器依赖 §9.9 bootstrap 流程（独立特性，裁定见 plan §16.5）。
+
+## 运行时配置（环境变量，`internal/config`）
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `DB_DSN` | —— | Postgres 连接串 |
+| `HUB_ADDR` | —— | HTTP 监听地址 |
+| `KEYCLOAK_ISSUER` | **空** | 空 ⇒ `AuthDisabled()`（dev 姿态：auth 中间件与 org 组预置同时关闭）。须与 Keycloak 实际通告的 issuer **一字不差**（KC 26 通告短名 svc、剥默认端口） |
+| `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_SECRET` | `sdp-console` / `sdp-backend` / 空 | JWT `azp` 校验 / org 组预置的 Admin API 凭据 |
+| `CREDENTIAL_ENCRYPTION_KEY` | **空** | 空 ⇒ 凭据明文落库（dev）；32 字节 key ⇒ AES-GCM 信封加密 |
+| `PACKAGE_VERSION_CONSOLE/HUB/RUNNER` | `dev` | 版本矩阵；集群内由 chart 的 `package-versions` ConfigMap 注入 |
+
 ## swaggo API 文档（`docs/`）
 
 `docs/{docs.go,swagger.json,swagger.yaml}` 由 `swag init` 生成；但 **`docs.go` 是编译必需输入**（`cmd/hub/main.go` 空白导入该包注册 swagger spec，`/swagger/*any` 依赖它）。按「**编译/打包必需 → 入库**」的生成物规则（与 runner 的 controller-gen 产物 `zz_generated.deepcopy.go` 一致），这三个文件：

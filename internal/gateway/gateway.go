@@ -35,6 +35,13 @@ type StatusHandler func(ctx context.Context, targetID uuid.UUID, payload *runner
 // LogHandler is invoked for every log_chunk relayed from a Runner.
 type LogHandler func(ctx context.Context, payload *runnerapi.LogChunkPayload)
 
+// AgentOpStatusHandler is invoked for every agent_op_status relayed from a
+// Runner (§9.5 / §9.9 op lifecycle reports).
+type AgentOpStatusHandler func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentOpStatusPayload)
+
+// AgentOpLogHandler is invoked for every agent_op_log relayed from a Runner.
+type AgentOpLogHandler func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentOpLogPayload)
+
 // ConnectHandler is invoked once a Runner has registered and been marked
 // online, so the caller can redeliver any work enqueued while the target was
 // offline (e.g. pending dispatch jobs).
@@ -53,6 +60,9 @@ type HubServer struct {
 	statusH  StatusHandler
 	logH     LogHandler
 	connectH ConnectHandler
+	// agent op lifecycle reports (§9.5 / §9.9, UNIMPLEMENTED-MODULES-PLAN §16.5)
+	opStatusH AgentOpStatusHandler
+	opLogH    AgentOpLogHandler
 }
 
 // New constructs a HubServer. gatewayToken, when non-empty, must match the
@@ -79,6 +89,12 @@ func (h *HubServer) SetLogHandler(fn LogHandler) { h.logH = fn }
 
 // SetConnectHandler registers the callback invoked when a Runner connects.
 func (h *HubServer) SetConnectHandler(fn ConnectHandler) { h.connectH = fn }
+
+// SetAgentOpStatusHandler registers the callback for Runner op status reports.
+func (h *HubServer) SetAgentOpStatusHandler(fn AgentOpStatusHandler) { h.opStatusH = fn }
+
+// SetAgentOpLogHandler registers the callback for Runner op log chunks.
+func (h *HubServer) SetAgentOpLogHandler(fn AgentOpLogHandler) { h.opLogH = fn }
 
 // ServeWS is the gin handler mounted at the gateway path. It authenticates
 // the Runner, registers the connection, marks the target online, then reads
@@ -198,6 +214,24 @@ func (h *HubServer) RolloutControl(ctx context.Context, targetID uuid.UUID, payl
 	return ws.WriteJSON(msg)
 }
 
+// DispatchAgentOp sends an AgentOpDispatchPayload to the Runner managing
+// targetID (§9.5 exec / §9.9 接入编排). It returns ErrNoRunner if that target
+// has no live connection — the caller treats that as "op stays queued".
+func (h *HubServer) DispatchAgentOp(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentOpDispatchPayload) error {
+	h.mu.RLock()
+	ws, ok := h.conns[targetID]
+	h.mu.RUnlock()
+	if !ok {
+		return ErrNoRunner
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	msg := runnerapi.Message{Type: runnerapi.MessageAgentOp, Payload: raw}
+	return ws.WriteJSON(msg)
+}
+
 func (h *HubServer) readLoop(ctx context.Context, targetID uuid.UUID, ws *websocket.Conn) {
 	for {
 		_, data, err := ws.ReadMessage()
@@ -232,6 +266,24 @@ func (h *HubServer) readLoop(ctx context.Context, targetID uuid.UUID, ws *websoc
 			}
 		case runnerapi.MessageHeartbeat:
 			_ = h.targetSvc.Heartbeat(targetID, true)
+		case runnerapi.MessageAgentOpStatus:
+			var p runnerapi.AgentOpStatusPayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				applog.Infof("gateway: agent op status decode failed: %v", err)
+				continue
+			}
+			if h.opStatusH != nil {
+				h.opStatusH(ctx, targetID, &p)
+			}
+		case runnerapi.MessageAgentOpLog:
+			var p runnerapi.AgentOpLogPayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				applog.Infof("gateway: agent op log decode failed: %v", err)
+				continue
+			}
+			if h.opLogH != nil {
+				h.opLogH(ctx, targetID, &p)
+			}
 		default:
 			applog.Infof("gateway: target %s unhandled message type %q", targetID, msg.Type)
 		}

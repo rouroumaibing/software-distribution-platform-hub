@@ -8,9 +8,12 @@ import (
 )
 
 // Base is embedded by tables that support soft delete: orgs, services,
-// components, pipelines, credentials, users, pipeline_stages and
+// components, pipelines, credentials, pipeline_stages and
 // pipeline_task_templates. Deleting a row here should never cascade-delete
 // run history, so these use GORM's soft delete instead of a hard DELETE.
+//
+// (The local `users` table used to be in this list; D3 removed it along with
+// the per-request provisioning — hub no longer persists identities at all.)
 //
 // 软删表若带唯一约束，必须写成 `where deleted_at is null` 的 partial unique
 // index（pipelines / pipeline_stages / pipeline_task_templates 同此手法）：
