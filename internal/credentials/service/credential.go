@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+
 	"github.com/google/uuid"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
@@ -44,17 +46,29 @@ func (s *CredentialService) Get(id uuid.UUID) (*models.Credential, error) {
 	return c, nil
 }
 
-// Update encrypts the incoming value. NOTE: an empty input value encrypts to
-// empty and overwrites the stored secret — the caller is responsible for
-// sending the full value on update (pre-existing contract; preserve-current-
-// on-empty would need a read-before-write, out of scope here).
+// Update encrypts the incoming value. An empty input value means "keep the
+// current secret" — implemented as a read-before-write so an edit that only
+// changes metadata (name/type/scope) never wipes the stored credential. The
+// console never receives the plaintext value (Credential.Value is json:"-"),
+// so it cannot resend it; this makes metadata-only edits safe (T-U8 凭据管理 UI).
 func (s *CredentialService) Update(id uuid.UUID, in *models.Credential) error {
-	enc, err := codec.Encrypt(in.Value)
-	if err != nil {
-		return err
+	if in.Value != "" {
+		enc, err := codec.Encrypt(in.Value)
+		if err != nil {
+			return err
+		}
+		in.Value = enc
+	} else {
+		cur, err := s.repo.GetByID(id)
+		if err != nil {
+			return err
+		}
+		if cur == nil {
+			return common.ErrNotFound.WithError(fmt.Errorf("credential %s not found", id))
+		}
+		in.Value = cur.Value
 	}
 	in.ID = id
-	in.Value = enc
 	return s.repo.Update(in)
 }
 

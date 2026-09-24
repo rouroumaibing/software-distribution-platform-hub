@@ -10,12 +10,15 @@ import (
 	_ "net/http/pprof" // registers pprof handlers on http.DefaultServeMux
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	_ "github.com/rouroumaibing/software-distribution-platform-hub/docs"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/metrics"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
@@ -420,6 +423,16 @@ func main() {
 	orgSvc.ReconcileGroups(ctx)
 
 	r := gin.Default()
+
+	// B-09: Hub-side metrics surface. The Runner already serves /metrics via
+	// controller-runtime's built-in server; this gives the Hub the same
+	// scrape target (hand-rolled Prometheus text, no extra dependency) so a
+	// single scrape job covers both control-plane and runner. The middleware
+	// records per-request counters and latency; /metrics exposes them.
+	r.Use(metrics.GinMiddleware())
+	metrics.SetBuildInfo("dev", "dev", runtime.Version())
+	r.GET("/metrics", metrics.GinHandler())
+
 	api := r.Group("/api/v1")
 
 	if auth != nil {
