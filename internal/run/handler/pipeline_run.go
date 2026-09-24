@@ -394,3 +394,63 @@ func (h *PipelineRunHandler) ControlRollout(c *gin.Context) {
 	}
 	common.OK(c, gin.H{"message": "rollout control dispatched", "taskName": taskName, "action": req.Action})
 }
+
+// Cancel godoc
+// @Summary Cancel a running pipeline run
+// @Description Asks the Runner owning the run to stop it: mark the PipelineRun Cancelled and tear down its in-flight TaskRuns. Only a Pending / Running / WaitingApproval run can be cancelled; a finished run returns 409. The new phase is recorded when the Runner streams its status update back.
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Failure 409 {object} common.Envelope
+// @Router /runs/{id}/cancel [post]
+func (h *PipelineRunHandler) Cancel(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	operator := ""
+	if sub, ok := middleware.CurrentSubject(c); ok {
+		operator = sub
+	}
+	if err := h.svc.CancelRun(c.Request.Context(), id, operator); err != nil {
+		// AbortWithError normalizes: the service's coded ErrRunTerminal passes
+		// through as 409 + reasons, a missing run maps to 404.
+		common.AbortWithError(c, err)
+		return
+	}
+	common.OK(c, gin.H{"message": "cancel dispatched", "runId": id.String()})
+}
+
+// RerunTask godoc
+// @Summary Re-run a single task of a pipeline run
+// @Description Asks the Runner owning the run to reset one task (and, on the Runner, every downstream task that depends on it) so the DAG picks it up again — without re-dispatching the whole run.
+// @Tags runs
+// @Produce json
+// @Param id path string true "Pipeline Run ID (UUID)"
+// @Param name path string true "Task name"
+// @Success 200 {object} common.Envelope
+// @Failure 400 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Failure 500 {object} common.Envelope
+// @Router /runs/{id}/tasks/{name}/rerun [post]
+func (h *PipelineRunHandler) RerunTask(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	taskName := c.Param("name")
+	operator := ""
+	if sub, ok := middleware.CurrentSubject(c); ok {
+		operator = sub
+	}
+	if err := h.svc.RerunTask(c.Request.Context(), id, taskName, operator); err != nil {
+		common.AbortWithError(c, err)
+		return
+	}
+	common.OK(c, gin.H{"message": "rerun dispatched", "runId": id.String(), "taskName": taskName})
+}

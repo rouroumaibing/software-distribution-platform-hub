@@ -46,6 +46,14 @@ func (f *fakeDispatcher) RolloutControl(ctx context.Context, targetID uuid.UUID,
 	return nil
 }
 
+func (f *fakeDispatcher) RerunTask(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RerunTaskPayload) error {
+	return nil
+}
+
+func (f *fakeDispatcher) CancelPipelineRun(ctx context.Context, targetID uuid.UUID, payload *runnerapi.CancelPipelineRunPayload) error {
+	return nil
+}
+
 func (f *fakeDispatcher) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

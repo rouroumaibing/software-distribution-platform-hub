@@ -214,6 +214,45 @@ func (h *HubServer) RolloutControl(ctx context.Context, targetID uuid.UUID, payl
 	return ws.WriteJSON(msg)
 }
 
+// RerunTask sends a RerunTaskPayload to the Runner managing targetID, asking
+// it to re-run a single task (and, on the Runner, every downstream task that
+// depends on it) without re-dispatching the whole run. It returns ErrNoRunner
+// if that target has no live connection, so the caller can surface a clear
+// "target offline, retry on reconnect" error.
+func (h *HubServer) RerunTask(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RerunTaskPayload) error {
+	h.mu.RLock()
+	ws, ok := h.conns[targetID]
+	h.mu.RUnlock()
+	if !ok {
+		return ErrNoRunner
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	msg := runnerapi.Message{Type: runnerapi.MessageRerunTask, Payload: raw}
+	return ws.WriteJSON(msg)
+}
+
+// CancelPipelineRun sends a CancelPipelineRunPayload to the Runner managing
+// targetID, asking it to stop the run: the Runner marks the PipelineRun
+// Cancelled and tears down its in-flight TaskRuns. It returns ErrNoRunner if
+// that target has no live connection.
+func (h *HubServer) CancelPipelineRun(ctx context.Context, targetID uuid.UUID, payload *runnerapi.CancelPipelineRunPayload) error {
+	h.mu.RLock()
+	ws, ok := h.conns[targetID]
+	h.mu.RUnlock()
+	if !ok {
+		return ErrNoRunner
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	msg := runnerapi.Message{Type: runnerapi.MessageCancelPipelineRun, Payload: raw}
+	return ws.WriteJSON(msg)
+}
+
 // DispatchAgentOp sends an AgentOpDispatchPayload to the Runner managing
 // targetID (§9.5 exec / §9.9 接入编排). It returns ErrNoRunner if that target
 // has no live connection — the caller treats that as "op stays queued".

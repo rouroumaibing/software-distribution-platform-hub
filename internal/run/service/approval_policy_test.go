@@ -160,6 +160,12 @@ func (d *recordingDispatcher) Approve(_ context.Context, targetID uuid.UUID, p *
 func (d *recordingDispatcher) RolloutControl(context.Context, uuid.UUID, *runnerapi.RolloutControlPayload) error {
 	return nil
 }
+func (d *recordingDispatcher) RerunTask(context.Context, uuid.UUID, *runnerapi.RerunTaskPayload) error {
+	return nil
+}
+func (d *recordingDispatcher) CancelPipelineRun(context.Context, uuid.UUID, *runnerapi.CancelPipelineRunPayload) error {
+	return nil
+}
 
 // timeoutFixture 构造一个"某 run 有一条挂起审批、其任务声明了 timeout"的场景。
 func timeoutFixture(t *testing.T, timeout int, age time.Duration, dispatchErr error) (*PipelineRunService, *stubApprovalStore, *recordingDispatcher) {

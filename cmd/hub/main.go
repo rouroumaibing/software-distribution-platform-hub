@@ -533,6 +533,11 @@ func main() {
 	scoped.POST("/runs/:id/tasks/:name/rollout", pipelineRunHandler.ControlRollout)
 	// 重派发：把卡在 Pending 的 run 重新投递给当前在线的 runner。
 	scoped.POST("/runs/:id/redispatch", wrap(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.Redispatch)...)
+	// 取消运行：停掉 Pending/Running/WaitingApproval 的 run（Runner 置 Cancelled
+	// 并清在途 TaskRun）；终态 run 返回 409（service 侧 ErrRunTerminal）。
+	scoped.POST("/runs/:id/cancel", wrap(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.Cancel)...)
+	// 单任务重跑：只重跑某个任务及其下游，不重投整个 run（C-07）。
+	scoped.POST("/runs/:id/tasks/:name/rerun", wrap(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.RerunTask)...)
 
 	// Runner gateway WebSocket endpoint.
 	r.GET(cfg.GatewayPath, gw.ServeWS)

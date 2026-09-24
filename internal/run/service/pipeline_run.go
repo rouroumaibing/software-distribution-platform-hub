@@ -37,6 +37,12 @@ type Dispatcher interface {
 	// RolloutControl relays an operator's pause/promote/rollback command for
 	// a Release task's Rollout to the Runner owning the run's target.
 	RolloutControl(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RolloutControlPayload) error
+	// RerunTask relays an operator's request to re-run a single task (and its
+	// downstream dependents) to the Runner owning the run's target.
+	RerunTask(ctx context.Context, targetID uuid.UUID, payload *runnerapi.RerunTaskPayload) error
+	// CancelPipelineRun relays an operator's request to stop a run to the
+	// Runner owning the run's target.
+	CancelPipelineRun(ctx context.Context, targetID uuid.UUID, payload *runnerapi.CancelPipelineRunPayload) error
 }
 
 // DispatchJobStore is the narrow persistence surface the run service needs for
