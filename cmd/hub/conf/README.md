@@ -3,7 +3,7 @@
 页面演示/联调用的种子数据，**导入数据库使用**，不写死在代码里。
 表结构以 `internal/db/db.go` 的 AutoMigrate 为准（PostgreSQL 16）。
 
-> **D3 之后没有 `users` 表了**（`hub/ACCOUNT-PERMISSION-MODEL.md` §2.2）：hub 对身份
+> **D3 之后没有 `users` 表了**（`shared/ACCOUNT-PERMISSION-MODEL.md` §2.2）：hub 对身份
 > 无状态，主体一律取 token 的 `sub`。种子里的绑定因此直接写 `sub` 字符串，
 > 不再插入本地用户行（见 06_permissions.sql 的说明）。
 

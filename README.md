@@ -68,10 +68,10 @@ swag init --generalInfo cmd/hub/main.go --parseInternal --output docs
 
 本组件的设计文档（领域模型、控制面实现 Story、Backlog、下发队列 ADR、用户故事等）已统一收敛到独立的 [`software-distribution-platform-docs`](https://github.com/rouroumaibing/software-distribution-platform-docs) 仓库（单一真源），本仓库不再存放设计文档正文。
 
-- 领域 / 数据模型：[`hub/DATA-MODEL.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/hub/DATA-MODEL.md)
+- 领域 / 数据模型：[`shared/DATA-MODEL.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/shared/DATA-MODEL.md)
 - 控制面实现 Story：[`hub/STORY-hub-implementation.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/hub/STORY-hub-implementation.md)
 - 实现 Backlog（G1–G7）：[`hub/STORY-BACKLOG.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/hub/STORY-BACKLOG.md)
-- 下发持久队列 ADR：[`hub/ADR-dispatch-durable-queue.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/hub/ADR-dispatch-durable-queue.md)
+- 下发持久队列 ADR：[`shared/ADR-dispatch-durable-queue.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/shared/ADR-dispatch-durable-queue.md)
 - 跨组件对齐（整体目标 / 授权模型 G7 / 执行模型）：见 docs 仓库 [`README.md` §5](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/README.md)
 
 > 本仓库 `docs/design/README.md` 仅保留一个指针，指向上述统一文档库；设计文档的修改请在 docs 仓库进行。
