@@ -9,12 +9,16 @@ import (
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/cascade"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+	"gorm.io/gorm"
 )
 
 // ActiveRunCounter reports in-flight runs under a service, so ServiceService can
 // refuse deletion while a publish is in progress (DELETE-CONTRACT §6.4 #6).
 type ActiveRunCounter interface {
 	CountActiveByService(serviceID uuid.UUID, phases []string) (int64, error)
+	// CountActiveByServiceTx 是同一计数在调用方事务视图上的版本，用于把判定
+	// 收进级联删除同一事务（关闭 §1.3 并发插入绕过窗口）。
+	CountActiveByServiceTx(tx *gorm.DB, serviceID uuid.UUID, phases []string) (int64, error)
 }
 
 // ServiceTreeLookup resolves an org to its 1:1 service tree id, and reports
@@ -133,6 +137,9 @@ func (s *ServiceService) Update(id uuid.UUID, svc *models.Service) error {
 // 下每个组件执行整套子资源清理（pipeline/stage/template 软删、environment/config/
 // binding 硬删、artifact 打清理标记），再软删组件、最后软删服务自身；未装配时退回
 // 旧行为（只软删 service，脱库单测路径）。org 层**不**级联（§6.4 表格 #1 拍板）。
+//
+// 活跃运行判定与级联删除现处于**同一事务**（STATUS §2 #12）：fast-path 即时 409 +
+// 级联事务内 guard 复检，并发新起的 run 会被 guard 看到、整事务回滚。
 func (s *ServiceService) Delete(id uuid.UUID) error {
 	if s.runCounter != nil {
 		n, err := s.runCounter.CountActiveByService(id, activePhases)
@@ -146,7 +153,18 @@ func (s *ServiceService) Delete(id uuid.UUID) error {
 		}
 	}
 	if s.cascader != nil {
-		return s.cascader.DeleteServiceSubtree(id)
+		return s.cascader.DeleteServiceSubtree(id, func(tx *gorm.DB) error {
+			n, err := s.runCounter.CountActiveByServiceTx(tx, id, activePhases)
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				return common.DomainErrorWithReasons(common.KindService, http.StatusConflict, 1,
+					"service still has in-progress runs; terminate them before deleting",
+					fmt.Sprintf("%d 条运行仍在进行中（Pending/Running/WaitingApproval），请先终止服务下相关组件的运行", n))
+			}
+			return nil
+		})
 	}
 	return s.repo.Delete(id)
 }

@@ -1,14 +1,69 @@
 basePath: /api/v1
 definitions:
-  common.Envelope:
+  github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope:
     properties:
       data: {}
       error:
         type: string
       errorCode:
         type: string
+      reasons:
+        items:
+          type: string
+        type: array
     type: object
-  handler.ApprovalDecisionRequest:
+  github_com_rouroumaibing_software-distribution-platform-hub_internal_environment_service.ExecRequest:
+    properties:
+      command:
+        type: string
+      script:
+        type: string
+    type: object
+  github_com_rouroumaibing_software-distribution-platform-hub_internal_run_models.TriggerRequest:
+    properties:
+      commitSha:
+        description: CommitSHA records the resolved commit for audit display.
+        type: string
+      params:
+        description: Params are substituted into task command/args/env by the runner.
+        items:
+          $ref: '#/definitions/v1alpha1.Param'
+        type: array
+      repoPath:
+        type: string
+      repoRef:
+        type: string
+      repoUrl:
+        description: |-
+          RepoURL/RepoRef/RepoPath describe the source checkout for script tasks.
+          The hub resolves Ref to a concrete commit SHA at trigger time.
+        type: string
+      targetId:
+        description: |-
+          TargetID overrides target selection. If nil/empty, the hub picks the
+          first online target. Ignored when TargetIDs is set.
+        type: string
+      targetIds:
+        description: |-
+          TargetIDs fans the trigger out to multiple environments: one independent
+          PipelineRun is created per listed target (each keeps the 1:1 run↔target
+          invariant). Targets only need to EXIST, not be online — the durable
+          dispatch queue delivers each run once its Runner reconnects.
+          When set, TargetID is ignored.
+        items:
+          type: string
+        type: array
+      targetNamespace:
+        description: |-
+          TargetNamespace is the K8s namespace the runner creates Jobs in.
+          Defaults to "sdp-run" when empty.
+        type: string
+      triggeredBy:
+        description: TriggeredBy is the hub-side user/system identity starting the
+          run.
+        type: string
+    type: object
+  internal_run_handler.ApprovalDecisionRequest:
     properties:
       approved:
         description: Approved is true to sign off, false to reject.
@@ -22,7 +77,7 @@ definitions:
         description: Reason is free text for the audit trail (stored by the Runner).
         type: string
     type: object
-  handler.RolloutControlRequest:
+  internal_run_handler.RolloutControlRequest:
     properties:
       action:
         description: Action is one of pause | promote | rollback.
@@ -33,7 +88,12 @@ definitions:
           defaults to the authenticated user (or the dev user in dev mode).
         type: string
     type: object
-  models.TriggerRequest:
+  v1alpha1.Param:
+    properties:
+      name:
+        type: string
+      value:
+        type: string
     type: object
 host: localhost:8080
 info:
@@ -46,6 +106,223 @@ info:
   title: Software Distribution Platform Hub API
   version: "1.0"
 paths:
+  /agent-ops/{id}:
+    get:
+      description: Returns the ledger row (id, opType, status, detail, message) —
+        the polling fallback for environments where SSE is impractical.
+      parameters:
+      - description: Agent op ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Get one agent op
+      tags:
+      - agent-ops
+  /agent-ops/{id}/stream:
+    get:
+      description: Replays persisted log chunks, then pushes live status/log events;
+        closes after a terminal status (succeeded|failed).
+      parameters:
+      - description: Agent op ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: text/event-stream
+          schema:
+            type: string
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Stream one agent op's output and status (SSE)
+      tags:
+      - agent-ops
+  /environments/{id}/exec:
+    post:
+      consumes:
+      - application/json
+      description: Validates the request and records an agent_ops entry (queued);
+        execution is performed by the Runner / direct-connect executor, not the hub
+        (no client-go).
+      parameters:
+      - description: Environment ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: command or script (at least one)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_environment_service.ExecRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Queue a direct-exec operation on the environment's target
+      tags:
+      - environments
+  /pipelines/{id}/versions:
+    get:
+      description: 'Returns the append-only snapshot history (newest first): version
+        number, author, stage/task counts, and whether the body differs from the previous
+        version. Bodies are omitted — fetch one with GET /pipelines/:id/versions/:version.'
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: max versions to return (default 50, max 200)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: List a pipeline's definition versions
+      tags:
+      - pipelines
+  /pipelines/{id}/versions/{version}:
+    get:
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Version number
+        in: path
+        name: version
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Get one pipeline definition version (full snapshot body)
+      tags:
+      - pipelines
+  /pipelines/{id}/versions/{version}/diff:
+    get:
+      description: 'Returns the stage/task level differences from ?against=<n> to
+        :version. Directional: added/removed swap if :version is the older one.'
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Target version number
+        in: path
+        name: version
+        required: true
+        type: integer
+      - description: Baseline version number
+        in: query
+        name: against
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Diff two versions of a pipeline definition
+      tags:
+      - pipelines
+  /pipelines/{id}/versions/{version}/rollback:
+    post:
+      description: 'Re-materializes the version''s stages and task templates and records
+        the result as a new version. Structure only — pipeline metadata (name/kind/description)
+        is left alone. History is append-only: no version rows are rewritten or deleted.'
+      parameters:
+      - description: Pipeline ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Version number to restore
+        in: path
+        name: version
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Roll a pipeline's structure back to a past version
+      tags:
+      - pipelines
   /pipelines/{pipelineId}/runs:
     get:
       parameters:
@@ -68,15 +345,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: List pipeline runs for a pipeline
       tags:
       - runs
@@ -84,9 +361,9 @@ paths:
       consumes:
       - application/json
       description: Assembles a PipelineRunSpec from the pipeline's current stages/tasks
-        and dispatches it to a target Runner. Set targetIds to fan the same
-        trigger out to multiple environments (one independent run per target); ignored
-        when targetId is set.
+        and dispatches it to a target Runner. Set targetIds to fan the same trigger
+        out to multiple environments (one independent run per target); ignored when
+        targetId is set.
       parameters:
       - description: Pipeline ID (UUID)
         in: path
@@ -98,22 +375,22 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/models.TriggerRequest'
+          $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_run_models.TriggerRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Created
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Trigger a pipeline run
       tags:
       - runs
@@ -144,22 +421,22 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/handler.ApprovalDecisionRequest'
+          $ref: '#/definitions/internal_run_handler.ApprovalDecisionRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Submit an approval decision for a paused Approval task
       tags:
       - runs
@@ -184,11 +461,11 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: List pipeline runs across all pipelines (Run Center)
       tags:
       - runs
@@ -206,16 +483,50 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Get a pipeline run by ID
+      tags:
+      - runs
+  /runs/{id}/cancel:
+    post:
+      description: 'Asks the Runner owning the run to stop it: mark the PipelineRun
+        Cancelled and tear down its in-flight TaskRuns. Only a Pending / Running /
+        WaitingApproval run can be cancelled; a finished run returns 409. The new
+        phase is recorded when the Runner streams its status update back.'
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Cancel a running pipeline run
       tags:
       - runs
   /runs/{id}/progress:
@@ -234,15 +545,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Get a pipeline run's live progress (phase + per-task status)
       tags:
       - runs
@@ -264,20 +575,48 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Re-deliver a pipeline run's spec to its target
+      tags:
+      - runs
+  /runs/{id}/stage-progress:
+    get:
+      description: Aggregated stage rows (name/sequence/executionMode/status/done/total)
+        derived on read from the run's TaskRuns; feeds console §7.6 stage cards.
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Per-stage progress of a pipeline run
       tags:
       - runs
   /runs/{id}/tasks:
@@ -294,15 +633,15 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: List tasks of a pipeline run
       tags:
       - runs
@@ -337,16 +676,54 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "404":
           description: Not Found
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Get a task's (or run-level) streamed logs for a pipeline run
+      tags:
+      - runs
+  /runs/{id}/tasks/{name}/rerun:
+    post:
+      description: Asks the Runner owning the run to reset one task (and, on the Runner,
+        every downstream task that depends on it) so the DAG picks it up again — without
+        re-dispatching the whole run.
+      parameters:
+      - description: Pipeline Run ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Task name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Re-run a single task of a pipeline run
       tags:
       - runs
   /runs/{id}/tasks/{name}/rollout:
@@ -371,25 +748,101 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/handler.RolloutControlRequest'
+          $ref: '#/definitions/internal_run_handler.RolloutControlRequest'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "400":
           description: Bad Request
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
         "500":
           description: Internal Server Error
           schema:
-            $ref: '#/definitions/common.Envelope'
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
       summary: Send a pause/promote/rollback command to a Release task's Rollout
       tags:
       - runs
+  /targets/{id}/agent-ops:
+    get:
+      description: Paged ledger listing (newest first) — the console's per-target
+        operation history.
+      parameters:
+      - description: Target ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: List agent ops of a target
+      tags:
+      - agent-ops
+  /targets/{id}/install:
+    post:
+      description: Records an agent_ops entry (queued) carrying the runner version
+        from the package-versions matrix; execution is the Runner's job (§9.9).
+      parameters:
+      - description: Target ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Queue a runner install on the target
+      tags:
+      - targets
+  /targets/{id}/upgrade:
+    post:
+      description: Records an agent_ops entry (queued) carrying the runner version
+        from the package-versions matrix; execution is the Runner's job (§9.9).
+      parameters:
+      - description: Target ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope'
+      summary: Queue a runner upgrade on the target
+      tags:
+      - targets
 securityDefinitions:
   BearerAuth:
     in: header

@@ -52,6 +52,13 @@ func (f *fakeActiveRunCounter) CountActiveByComponent(_ uuid.UUID, phases []stri
 	return f.active, f.err
 }
 
+// CountActiveByComponentTx 实现 ActiveRunCounter 的 tx 视图；fake 下与无 tx 版本
+// 同语义（记录 phase、返回同一 active 数），供级联事务内的 guard 复检使用。
+func (f *fakeActiveRunCounter) CountActiveByComponentTx(_ *gorm.DB, _ uuid.UUID, phases []string) (int64, error) {
+	f.phases = append([]string(nil), phases...)
+	return f.active, f.err
+}
+
 func assertConflictWithReasons(t *testing.T, err error, wantCode string) *common.APIError {
 	t.Helper()
 	if err == nil {

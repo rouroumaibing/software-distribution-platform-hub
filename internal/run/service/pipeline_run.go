@@ -71,9 +71,9 @@ type PipelineRunStore interface {
 	Update(*models.PipelineRun) error
 	GetByCRNameTarget(crName string, targetID uuid.UUID) (*models.PipelineRun, error)
 	FindByPipelineID(pipelineID uuid.UUID, p common.Pagination) ([]models.PipelineRun, int64, error)
-	// FindAll 的 phase / componentID 都是可选过滤（零值 = 不过滤）。componentID
-	// 供 console 流水线列表的「最近运行」列一次取回该组件下全部运行后本地分组。
-	FindAll(p common.Pagination, phase string, componentID uuid.UUID) ([]models.PipelineRun, int64, error)
+	// FindAll 的 phase / componentID / createdAfter 都是可选过滤（零值 = 不过滤）。
+	// createdAfter 支持 N-1 运行时间窗过滤（STATUS §2 #15）。
+	FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time) ([]models.PipelineRun, int64, error)
 }
 
 // TaskRunStore is the persistence surface over task_runs.
@@ -520,8 +520,8 @@ func (s *PipelineRunService) ListByPipeline(pipelineID uuid.UUID, p common.Pagin
 // componentID are optional filters — the zero value means "no filter on this
 // dimension". componentID is what lets the console's pipeline list fill its
 // 「最近运行」column with a single request instead of one per pipeline.
-func (s *PipelineRunService) ListAll(p common.Pagination, phase string, componentID uuid.UUID) ([]models.PipelineRun, int64, error) {
-	return s.repo.FindAll(p, phase, componentID)
+func (s *PipelineRunService) ListAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time) ([]models.PipelineRun, int64, error) {
+	return s.repo.FindAll(p, phase, componentID, createdAfter)
 }
 
 func (s *PipelineRunService) ListTasks(runID uuid.UUID) ([]models.TaskRun, error) {

@@ -1,7 +1,11 @@
 package service
 
 import (
+	"fmt"
+
 	"github.com/google/uuid"
+
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
@@ -23,8 +27,33 @@ func (s *ReleaseService) Create(m *models.RolloutRun) error { return s.repo.Crea
 
 func (s *ReleaseService) Get(id uuid.UUID) (*models.RolloutRun, error) { return s.repo.GetByID(id) }
 
-func (s *ReleaseService) List(p common.Pagination, pipelineRunID *uuid.UUID) ([]models.RolloutRun, int64, error) {
-	return s.repo.List(p, pipelineRunID)
+// List supports the console release-view filters (STATUS §2 #14):
+//   - pipelineRunID: 仅该运行的发布（原能力保留）
+//   - state:         语义键 all/running/paused/succeeded → RolloutPhase
+//     （releases 是全局资源，无组件作用域；"paused" 即 RolloutPhase=Paused）
+func (s *ReleaseService) List(p common.Pagination, pipelineRunID *uuid.UUID, state string) ([]models.RolloutRun, int64, error) {
+	phase, err := mapReleaseState(state)
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.repo.List(p, pipelineRunID, phase)
+}
+
+// mapReleaseState 把发布视图的语义筛选键映射为 RolloutRun.Phase 值。空/"all"
+// 表示不过滤。非法键返回错误，由 handler 转 400（不静默放过）。
+func mapReleaseState(state string) (string, error) {
+	switch state {
+	case "", "all":
+		return "", nil
+	case "running": // 进行中
+		return string(runnerapi.RolloutProgressing), nil
+	case "paused": // 已暂停
+		return string(runnerapi.RolloutPaused), nil
+	case "succeeded": // 成功
+		return string(runnerapi.RolloutHealthy), nil
+	default:
+		return "", fmt.Errorf("invalid release state %q: want one of all|running|paused|succeeded", state)
+	}
 }
 
 // Update applies the provided fields onto the existing row (preserving the FK

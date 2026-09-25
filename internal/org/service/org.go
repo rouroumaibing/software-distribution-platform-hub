@@ -113,8 +113,20 @@ func (s *OrgService) Update(id uuid.UUID, o *models.Org) error {
 }
 
 func (s *OrgService) Delete(id uuid.UUID) error {
-	// TODO: 平台级管理员权限校验;组织删除是高危操作,只做软删除,
-	// 保留恢复窗口,不允许立刻级联物理清除下属全部资源。
+	// 平台级管理员权限校验在路由层完成：本方法只经 OrgHandler.RegisterAdminRoutes
+	// 挂载于 platform-admin 路由组（与 componentRoleHandler.RegisterAdminRoutes 同手法），
+	// 该组在 auth 开启时挂 RequirePlatformPermission，dev 模式（auth==nil）下不加守卫——
+	// 与 ACCOUNT-PERMISSION-MODEL §11 步骤 4 的平台守卫收口一致。故此处不再重复鉴权。
+	//
+	// 删除语义（DELETE-CONTRACT §6.4 表格 #1，已逐项拍板）：
+	//   - Org 只做**软删除**（common.Base 含 gorm.DeletedAt，GORM 自动置 deleted_at，
+	//     保留恢复窗口），**不**立刻级联物理清除下属资源；
+	//   - **不**对 service 做级联（软删或硬删）：物理资源清空走独立运维流程，org
+	//     删除保持轻量、可恢复。这是 §6.4 与文档末尾四句建议之间的歧义点，按更具体、
+	//     且已逐项拍板的表格执行（详见 internal/cascade 包注释）。
+	//   - 若确需清掉某 org 的全部资源，调用方应在 **service 层**走
+	//     cascade.Deleter.DeleteServiceSubtree（已落：service→component→artifacts
+	//     同事务级联软删 + 制品 GC 标记，并含"无活跃运行"事务内守卫），而非经 org 删除。
 	return s.orgRepo.Delete(id)
 }
 

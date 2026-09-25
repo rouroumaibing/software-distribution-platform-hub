@@ -48,6 +48,12 @@ func (f *fakeServiceRunCounter) CountActiveByService(_ uuid.UUID, phases []strin
 	return f.active, f.err
 }
 
+// CountActiveByServiceTx 实现 ActiveRunCounter 的 tx 视图；fake 下与无 tx 版本同语义。
+func (f *fakeServiceRunCounter) CountActiveByServiceTx(_ *gorm.DB, _ uuid.UUID, phases []string) (int64, error) {
+	f.phases = append([]string(nil), phases...)
+	return f.active, f.err
+}
+
 func TestServiceDelete_RejectsActiveRuns(t *testing.T) {
 	store := &fakeServiceStore{}
 	counter := &fakeServiceRunCounter{active: 2}

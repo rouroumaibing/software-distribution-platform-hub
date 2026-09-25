@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -134,7 +136,17 @@ func (h *PipelineRunHandler) ListAll(c *gin.Context) {
 		}
 		componentID = parsed
 	}
-	items, total, err := h.svc.ListAll(p, c.Query("phase"), componentID)
+	// ?createdAfter= 运行时间窗下界（RFC3339），支持 N-1 「运行时间窗过滤」。
+	var createdAfter *time.Time
+	if raw := c.Query("createdAfter"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			common.Fail(c, http.StatusBadRequest, fmt.Errorf("invalid createdAfter %q: want RFC3339, e.g. 2026-09-01T00:00:00Z", raw))
+			return
+		}
+		createdAfter = &t
+	}
+	items, total, err := h.svc.ListAll(p, c.Query("phase"), componentID, createdAfter)
 	if err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)
 		return

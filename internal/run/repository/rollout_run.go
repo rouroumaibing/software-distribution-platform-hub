@@ -30,15 +30,19 @@ func (r *RolloutRunRepository) GetByID(id uuid.UUID) (*models.RolloutRun, error)
 	return &m, nil
 }
 
-// List returns rollout runs ordered by id desc, with an optional filter by
-// owning PipelineRun (resolved through task_runs). Pagination matches the rest
-// of the API via common.Pagination.
-func (r *RolloutRunRepository) List(p common.Pagination, pipelineRunID *uuid.UUID) ([]models.RolloutRun, int64, error) {
+// List returns rollout runs ordered by id desc, with optional filters by owning
+// PipelineRun (resolved through task_runs) and by rollout phase. phase == ""
+// means no phase filter. Pagination matches the rest of the API via
+// common.Pagination. (STATUS §2 #14: 发布视图 state 筛选后端支持)
+func (r *RolloutRunRepository) List(p common.Pagination, pipelineRunID *uuid.UUID, phase string) ([]models.RolloutRun, int64, error) {
 	var items []models.RolloutRun
 	var total int64
 	q := r.DB.Model(&models.RolloutRun{})
 	if pipelineRunID != nil {
 		q = q.Where("task_run_id IN (SELECT id FROM task_runs WHERE pipeline_run_id = ?)", *pipelineRunID)
+	}
+	if phase != "" {
+		q = q.Where("phase = ?", phase)
 	}
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err

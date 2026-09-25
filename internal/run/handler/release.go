@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -51,9 +52,16 @@ func (h *ReleaseHandler) List(c *gin.Context) {
 			prID = &id
 		}
 	}
-	items, total, err := h.svc.List(p, prID)
+	// scope: releases 是全局资源，仅 "global" 合法（缺省即 global）。
+	if v := c.Query("scope"); v != "" && v != "global" {
+		common.Fail(c, http.StatusBadRequest, fmt.Errorf("invalid scope %q: releases are global, only scope=global is supported", v))
+		return
+	}
+	// state: 发布视图语义筛选（STATUS §2 #14）。
+	state := c.Query("state")
+	items, total, err := h.svc.List(p, prID, state)
 	if err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		common.Fail(c, http.StatusBadRequest, err)
 		return
 	}
 	common.OKPaged(c, items, total, p)

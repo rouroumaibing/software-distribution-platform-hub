@@ -67,7 +67,7 @@ func (f *fakePipelineRunStore) FindByPipelineID(pipelineID uuid.UUID, p common.P
 	return nil, 0, nil
 }
 
-func (f *fakePipelineRunStore) FindAll(p common.Pagination, phase string, componentID uuid.UUID) ([]models.PipelineRun, int64, error) {
+func (f *fakePipelineRunStore) FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time) ([]models.PipelineRun, int64, error) {
 	return nil, 0, nil
 }
 

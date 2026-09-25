@@ -12,12 +12,16 @@ import (
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/component/models"
 	permmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
 	permbrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/repository"
+	"gorm.io/gorm"
 )
 
 // ActiveRunCounter reports in-flight runs under a component, so ComponentService
 // can refuse deletion while a publish is in progress (DELETE-CONTRACT §6.4 #6).
 type ActiveRunCounter interface {
 	CountActiveByComponent(componentID uuid.UUID, phases []string) (int64, error)
+	// CountActiveByComponentTx 是同一计数在调用方事务视图上的版本，用于把判定
+	// 收进级联删除同一事务（关闭 §1.3 并发插入绕过窗口）。
+	CountActiveByComponentTx(tx *gorm.DB, componentID uuid.UUID, phases []string) (int64, error)
 }
 
 // activePhases are run phases that block deletion (functional safety).
@@ -143,10 +147,12 @@ func (s *ComponentService) Update(id uuid.UUID, c *models.Component) error {
 // artifacts 打 pending_deletion+expires_at 清理标记）；未装配时退回旧行为——
 // 只软删 component 自身（脱库单测与无 DB 装配路径）。
 //
-// 残余竞态（如实记录）：活跃运行判定在本方法、级联在事务内，两者之间纳秒级
-// 窗口里新起的 run 不会被本判定看到。完全关掉它需要把 run 计数也放进级联事务
-// （run repo 支持 tx 绑定），当前判定为不值得：这个窗口是毫秒级偶发，后果是
-// "run 挂在软删组件上继续跑完"（历史 run 本就允许），不是孤儿 Job。
+// 残余竞态已关闭（STATUS §2 #12，2026-09-25）：下方 fast-path 判定用于即时 409 UX；
+// 真正的原子性由级联事务内的 guard 保证 —— 删除组件/服务时，活跃运行计数在**同一
+// 事务**里复检，并发插入的 run 会被 guard 看到、整事务回滚、返回结构化 409。
+// 设计裁定（双向钢人论证）：把计数收进级联事务是值得的——窗口虽小、后果虽"只是
+// 历史 run 挂在软删组件上"，但它是 DELETE-CONTRACT §6.4 #6 唯一硬规则的实质性
+// 例外路径，原子化后该硬规则不再有可绕过口子，且 run repo 已支持 tx 绑定、改动局部。
 func (s *ComponentService) Delete(id uuid.UUID) error {
 	if s.runCounter != nil {
 		n, err := s.runCounter.CountActiveByComponent(id, activePhases)
@@ -160,7 +166,18 @@ func (s *ComponentService) Delete(id uuid.UUID) error {
 		}
 	}
 	if s.cascader != nil {
-		return s.cascader.DeleteComponentSubtree(id)
+		return s.cascader.DeleteComponentSubtree(id, func(tx *gorm.DB) error {
+			n, err := s.runCounter.CountActiveByComponentTx(tx, id, activePhases)
+			if err != nil {
+				return err
+			}
+			if n > 0 {
+				return common.DomainErrorWithReasons(common.KindComponent, http.StatusConflict, 1,
+					"component still has in-progress runs; terminate them before deleting",
+					fmt.Sprintf("%d 条运行仍在进行中（Pending/Running/WaitingApproval），请先终止相关流水线运行", n))
+			}
+			return nil
+		})
 	}
 	return s.repo.Delete(id)
 }

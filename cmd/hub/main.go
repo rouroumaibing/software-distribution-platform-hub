@@ -19,6 +19,7 @@ import (
 
 	_ "github.com/rouroumaibing/software-distribution-platform-hub/docs"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/metrics"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/notification"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
@@ -517,7 +518,10 @@ func main() {
 			h,
 		}
 	}
+	// 通知中心（STATUS §2 #7）：把待审批运行聚合成铃铛通知流。
+	notificationHandler := notification.NewHandler(notification.New(approvalRepo, pipelineRunRepo))
 	scoped := api.Group("/")
+	scoped.GET("/notifications", notificationHandler.List)
 	scoped.POST("/pipelines/:id/runs", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.Trigger)...)
 	scoped.GET("/pipelines/:id/runs", wrap(middleware.ResourcePipeline, "id", permmodels.ActionComponentRead, pipelineRunHandler.ListByPipeline)...)
 	// 全局运行列表（运行中心）：跨 pipeline 巡视，支持 ?phase= 过滤。

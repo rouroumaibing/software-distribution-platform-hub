@@ -41,9 +41,15 @@ import (
 )
 
 // Deleter performs whole-subtree deletions. Every public method runs in **one**
-// transaction: §1.3 记的「校验与删除不在同一事务」缺口就靠这一点关掉（校验在调用方、
-// 删除在这里，两者之间不再有可插入窗口 —— 调用方判定"无活跃运行"与本次删除是一个
-// 原子动作的前提是删除本身不留下"半删"状态）。
+// transaction, and accepts an optional `guard` callback that runs **inside** the
+// same transaction *before* any row is touched. Callers use the guard to re-run
+// the "no active run" safety check (DELETE-CONTRACT §6.4 #6) against the
+// transaction's view of the data —— this is exactly what closes the §1.3 race
+// window: the service's pre-check (fast-path 409) and the cascade delete used to
+// be two separate transactions, so a run inserted in between could slip past the
+// check. Now the re-check and the delete are atomic: if the guard reports active
+// runs, the whole transaction rolls back and the caller returns the structured
+// 409.
 //
 // 依赖 *gorm.DB 而不是各模块 repository：跨 6 个模块的清理若逐 repo 调用，就不再是
 // 一个事务，§1.3 的缺口会原样回来。这是本包唯一的"直连 DB"，故刻意独立成包、
@@ -55,15 +61,28 @@ type Deleter struct {
 func NewDeleter(db *gorm.DB) *Deleter { return &Deleter{DB: db} }
 
 // DeleteComponentSubtree 删除一个组件及其全部域内子资源（§6.4 #3/#4/#5/#10）。
-func (d *Deleter) DeleteComponentSubtree(componentID uuid.UUID) error {
+// guard（可 nil）在事务内、级联清理前执行：用于把"无活跃运行"的判定收进同一事务，
+// 彻底关掉 §1.3 的并发插入绕过窗口。
+func (d *Deleter) DeleteComponentSubtree(componentID uuid.UUID, guard func(tx *gorm.DB) error) error {
 	return d.DB.Transaction(func(tx *gorm.DB) error {
+		if guard != nil {
+			if err := guard(tx); err != nil {
+				return err
+			}
+		}
 		return deleteComponents(tx, tx.Table("components").Select("id").Where("id = ?", componentID))
 	})
 }
 
 // DeleteServiceSubtree 删除一个服务、其全部组件及组件的子资源（§6.4 #2）。
-func (d *Deleter) DeleteServiceSubtree(serviceID uuid.UUID) error {
+// guard 语义同 DeleteComponentSubtree。
+func (d *Deleter) DeleteServiceSubtree(serviceID uuid.UUID, guard func(tx *gorm.DB) error) error {
 	return d.DB.Transaction(func(tx *gorm.DB) error {
+		if guard != nil {
+			if err := guard(tx); err != nil {
+				return err
+			}
+		}
 		if err := deleteComponents(tx, tx.Table("components").Select("id").Where("service_id = ?", serviceID)); err != nil {
 			return err
 		}

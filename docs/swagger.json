@@ -12,6 +12,320 @@
     "host": "localhost:8080",
     "basePath": "/api/v1",
     "paths": {
+        "/agent-ops/{id}": {
+            "get": {
+                "description": "Returns the ledger row (id, opType, status, detail, message) — the polling fallback for environments where SSE is impractical.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "agent-ops"
+                ],
+                "summary": "Get one agent op",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent op ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/agent-ops/{id}/stream": {
+            "get": {
+                "description": "Replays persisted log chunks, then pushes live status/log events; closes after a terminal status (succeeded|failed).",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "agent-ops"
+                ],
+                "summary": "Stream one agent op's output and status (SSE)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Agent op ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "text/event-stream",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/environments/{id}/exec": {
+            "post": {
+                "description": "Validates the request and records an agent_ops entry (queued); execution is performed by the Runner / direct-connect executor, not the hub (no client-go).",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "environments"
+                ],
+                "summary": "Queue a direct-exec operation on the environment's target",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Environment ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "command or script (at least one)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_environment_service.ExecRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/pipelines/{id}/versions": {
+            "get": {
+                "description": "Returns the append-only snapshot history (newest first): version number, author, stage/task counts, and whether the body differs from the previous version. Bodies are omitted — fetch one with GET /pipelines/:id/versions/:version.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "List a pipeline's definition versions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max versions to return (default 50, max 200)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/pipelines/{id}/versions/{version}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "Get one pipeline definition version (full snapshot body)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Version number",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/pipelines/{id}/versions/{version}/diff": {
+            "get": {
+                "description": "Returns the stage/task level differences from ?against=\u003cn\u003e to :version. Directional: added/removed swap if :version is the older one.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "Diff two versions of a pipeline definition",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Target version number",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Baseline version number",
+                        "name": "against",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/pipelines/{id}/versions/{version}/rollback": {
+            "post": {
+                "description": "Re-materializes the version's stages and task templates and records the result as a new version. Structure only — pipeline metadata (name/kind/description) is left alone. History is append-only: no version rows are rewritten or deleted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pipelines"
+                ],
+                "summary": "Roll a pipeline's structure back to a past version",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Version number to restore",
+                        "name": "version",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
         "/pipelines/{pipelineId}/runs": {
             "get": {
                 "produces": [
@@ -46,19 +360,19 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -89,7 +403,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/models.TriggerRequest"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_run_models.TriggerRequest"
                         }
                     }
                 ],
@@ -97,19 +411,19 @@
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -156,7 +470,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handler.ApprovalDecisionRequest"
+                            "$ref": "#/definitions/internal_run_handler.ApprovalDecisionRequest"
                         }
                     }
                 ],
@@ -164,19 +478,19 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -215,13 +529,13 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -249,19 +563,66 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/cancel": {
+            "post": {
+                "description": "Asks the Runner owning the run to stop it: mark the PipelineRun Cancelled and tear down its in-flight TaskRuns. Only a Pending / Running / WaitingApproval run can be cancelled; a finished run returns 409. The new phase is recorded when the Runner streams its status update back.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Cancel a running pipeline run",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -290,19 +651,19 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -331,25 +692,66 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/stage-progress": {
+            "get": {
+                "description": "Aggregated stage rows (name/sequence/executionMode/status/done/total) derived on read from the run's TaskRuns; feeds console §7.6 stage cards.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Per-stage progress of a pipeline run",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -377,19 +779,19 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -437,19 +839,73 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/runs/{id}/tasks/{name}/rerun": {
+            "post": {
+                "description": "Asks the Runner owning the run to reset one task (and, on the Runner, every downstream task that depends on it) so the DAG picks it up again — without re-dispatching the whole run.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runs"
+                ],
+                "summary": "Re-run a single task of a pipeline run",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Pipeline Run ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Task name",
+                        "name": "name",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -489,7 +945,7 @@
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handler.RolloutControlRequest"
+                            "$ref": "#/definitions/internal_run_handler.RolloutControlRequest"
                         }
                     }
                 ],
@@ -497,19 +953,130 @@
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {
-                            "$ref": "#/definitions/common.Envelope"
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/targets/{id}/agent-ops": {
+            "get": {
+                "description": "Paged ledger listing (newest first) — the console's per-target operation history.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "agent-ops"
+                ],
+                "summary": "List agent ops of a target",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/targets/{id}/install": {
+            "post": {
+                "description": "Records an agent_ops entry (queued) carrying the runner version from the package-versions matrix; execution is the Runner's job (§9.9).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "targets"
+                ],
+                "summary": "Queue a runner install on the target",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/targets/{id}/upgrade": {
+            "post": {
+                "description": "Records an agent_ops entry (queued) carrying the runner version from the package-versions matrix; execution is the Runner's job (§9.9).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "targets"
+                ],
+                "summary": "Queue a runner upgrade on the target",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Target ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope"
                         }
                     }
                 }
@@ -517,7 +1084,7 @@
         }
     },
     "definitions": {
-        "common.Envelope": {
+        "github_com_rouroumaibing_software-distribution-platform-hub_internal_common.Envelope": {
             "type": "object",
             "properties": {
                 "data": {},
@@ -526,10 +1093,72 @@
                 },
                 "errorCode": {
                     "type": "string"
+                },
+                "reasons": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
-        "handler.ApprovalDecisionRequest": {
+        "github_com_rouroumaibing_software-distribution-platform-hub_internal_environment_service.ExecRequest": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string"
+                },
+                "script": {
+                    "type": "string"
+                }
+            }
+        },
+        "github_com_rouroumaibing_software-distribution-platform-hub_internal_run_models.TriggerRequest": {
+            "type": "object",
+            "properties": {
+                "commitSha": {
+                    "description": "CommitSHA records the resolved commit for audit display.",
+                    "type": "string"
+                },
+                "params": {
+                    "description": "Params are substituted into task command/args/env by the runner.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/v1alpha1.Param"
+                    }
+                },
+                "repoPath": {
+                    "type": "string"
+                },
+                "repoRef": {
+                    "type": "string"
+                },
+                "repoUrl": {
+                    "description": "RepoURL/RepoRef/RepoPath describe the source checkout for script tasks.\nThe hub resolves Ref to a concrete commit SHA at trigger time.",
+                    "type": "string"
+                },
+                "targetId": {
+                    "description": "TargetID overrides target selection. If nil/empty, the hub picks the\nfirst online target. Ignored when TargetIDs is set.",
+                    "type": "string"
+                },
+                "targetIds": {
+                    "description": "TargetIDs fans the trigger out to multiple environments: one independent\nPipelineRun is created per listed target (each keeps the 1:1 run↔target\ninvariant). Targets only need to EXIST, not be online — the durable\ndispatch queue delivers each run once its Runner reconnects.\nWhen set, TargetID is ignored.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "targetNamespace": {
+                    "description": "TargetNamespace is the K8s namespace the runner creates Jobs in.\nDefaults to \"sdp-run\" when empty.",
+                    "type": "string"
+                },
+                "triggeredBy": {
+                    "description": "TriggeredBy is the hub-side user/system identity starting the run.",
+                    "type": "string"
+                }
+            }
+        },
+        "internal_run_handler.ApprovalDecisionRequest": {
             "type": "object",
             "properties": {
                 "approved": {
@@ -546,7 +1175,7 @@
                 }
             }
         },
-        "handler.RolloutControlRequest": {
+        "internal_run_handler.RolloutControlRequest": {
             "type": "object",
             "properties": {
                 "action": {
@@ -559,8 +1188,16 @@
                 }
             }
         },
-        "models.TriggerRequest": {
-            "type": "object"
+        "v1alpha1.Param": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
         }
     },
     "securityDefinitions": {
