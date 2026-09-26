@@ -240,6 +240,11 @@ func main() {
 			applog.Fatalf("hub: cannot init local artifact storage at %s: %v", cfg.ArtifactStoreLocalRoot, err)
 		}
 		artifactStore = localStore
+		// G-8 修复（2026-09-26 E2E）：此前该分支只赋了 artifactStore，声明的
+		// localArtifactStore 从未被赋值 → 下方 `if localArtifactStore != nil`
+		// 恒假 → /api/v1/storage/* 签名路由从未挂载 → upload-url 签发的
+		// PUT/GET URL 全部 404（编译器查不出的 wiring 断裂，实测复现）。
+		localArtifactStore = localStore
 		applog.Infof("hub: artifact storage driver=local root=%s public=%s", cfg.ArtifactStoreLocalRoot, cfg.ArtifactStorePublicURL)
 	default:
 		if cfg.ArtifactStoreDriver != "" {
@@ -369,6 +374,10 @@ func main() {
 	// B-11 生产强审批：向生产环境触发时，流水线必须带人工审核阶段。
 	// envRepo 同时满足窄接口 ProductionPolicy（只暴露一次批量查询）。
 	runSvc.SetProductionPolicy(envRepo)
+	// G-2：任务 Succeeded 时把 Produces 键登记进制品库（ApplyStatus 回调）。
+	runSvc.SetArtifactRegistrar(artifactSvc)
+	// G-1：注入执行 Job 的 ServiceAccount（runner 侧幂等 ensure SA+RBAC）。
+	runSvc.SetJobServiceAccount(cfg.JobServiceAccount)
 	// B-11 审批超时：把超过任务时限仍未决策的审批自动拒绝（用户故事 Epic 8）。
 	go runSvc.RunApprovalTimeouts(ctx, cfg.ApprovalTimeoutInterval)
 

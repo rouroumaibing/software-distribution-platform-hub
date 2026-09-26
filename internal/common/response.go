@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,20 @@ type PagedData struct {
 }
 
 func OK(c *gin.Context, data any) { c.JSON(http.StatusOK, Envelope{Data: data}) }
+
+// OKNoEscape is OK for payloads that carry URLs. gin's c.JSON html-escapes
+// '&' into the literal text `\u0026`, which is valid JSON but corrupts the
+// query string for shell clients that extract the URL with sed/grep instead
+// of a JSON parser — a signed artifact URL then 403s on a garbage signature
+// (2026-09-26 E2E 实测）。Encoding with SetEscapeHTML(false) keeps '&' literal
+// and the JSON body stays spec-valid.
+func OKNoEscape(c *gin.Context, data any) {
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Status(http.StatusOK)
+	enc := json.NewEncoder(c.Writer)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(Envelope{Data: data})
+}
 
 func OKPaged(c *gin.Context, items any, total int64, p Pagination) {
 	c.JSON(http.StatusOK, Envelope{Data: PagedData{Items: items, Total: total, Page: p.Page, PageSize: p.PageSize}})

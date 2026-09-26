@@ -60,6 +60,11 @@ type PipelineTaskTemplate struct {
 
 	RetryPolicy    datatypes.JSON `gorm:"not null;default:'{\"maxRetries\":0}'" json:"retryPolicy,omitempty"`
 	TimeoutSeconds int            `gorm:"not null;default:0" json:"timeoutSeconds"`
+
+	// Privileged (G-4 最小版) runs the task container with
+	// securityContext.privileged=true, enabling docker-in-docker /
+	// containerd-in-containerd build images. Off by default; opt-in per task.
+	Privileged bool `gorm:"not null;default:false" json:"privileged,omitempty"`
 }
 
 func (PipelineTaskTemplate) TableName() string { return "pipeline_task_templates" }

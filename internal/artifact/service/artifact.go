@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,68 @@ func NewArtifactService(repo *repository.ArtifactRepository, store storage.Clien
 // Register is called by the "归档阶段" task's status-sync handler once the
 // script finishes uploading to object storage (via PresignUpload URL).
 func (s *ArtifactService) Register(a *models.Artifact) error { return s.repo.Create(a) }
+
+// RegisterProduced implements the run service's ArtifactRegistry interface
+// (G-2 收口，2026-09-26)：当一个声明了 Produces 的任务 Succeeded 时，由
+// ApplyStatus 调用，把每个 storage key 登记成制品行 —— 此前 Register 全仓
+// 无调用方，上传成功后前端制品 Tab 恒空。Best-effort：单条失败记日志继续，
+// 绝不让登记失败影响运行状态回写。重复 key 幂等跳过（同任务重跑场景）。
+func (s *ArtifactService) RegisterProduced(componentID, runID, taskRunID uuid.UUID, taskName, version string, storageKeys []string) {
+	for _, key := range storageKeys {
+		if key == "" {
+			continue
+		}
+		// G-14 idempotency: the completion hook fires on every Succeeded
+		// status update (re-reports, reconcile replays), so skip keys that
+		// are already registered for this component instead of piling up
+		// duplicate rows. First-write-wins: later runs re-producing the same
+		// key keep the original provenance (runID/taskRunID).
+		exists, err := s.repo.ExistsByComponentAndKey(componentID, key)
+		if err != nil {
+			applog.Warnf("artifact: G-2 register produced key=%q run=%s task=%q existence probe failed: %v", key, runID, taskName, err)
+		} else if exists {
+			continue
+		}
+		artifactType := classifyArtifact(key)
+		a := &models.Artifact{
+			ComponentID:   componentID,
+			PipelineRunID: &runID,
+			TaskRunID:     &taskRunID,
+			Version:       version,
+			ArtifactType:  artifactType,
+			StorageKey:    key,
+		}
+		if err := s.repo.Create(a); err != nil {
+			applog.Warnf("artifact: G-2 register produced key=%q run=%s task=%q failed: %v", key, runID, taskName, err)
+		}
+	}
+}
+
+// classifyArtifact infers the artifact type from the storage key extension.
+func classifyArtifact(key string) string {
+	switch {
+	case strings.HasSuffix(key, ".tgz"), strings.HasSuffix(key, ".tar.gz"), strings.HasSuffix(key, ".tar"):
+		return "archive"
+	case strings.HasSuffix(key, ".whl"), strings.HasSuffix(key, ".jar"), strings.HasSuffix(key, ".bin"):
+		return "binary"
+	case strings.HasSuffix(key, ".img"), strings.HasSuffix(key, ".image"):
+		return "image"
+	default:
+		return "generic"
+	}
+}
+
+// KeyDownloadURL mints a short-lived signed GET URL for an arbitrary storage
+// key — no artifact row required. Used by the runner's consume init
+// container (G-6) to fetch upstream task outputs, which live in the object
+// store but are (deliberately) not necessarily registered as browsable
+// artifacts.
+func (s *ArtifactService) KeyDownloadURL(key string) (string, error) {
+	if s.store == nil {
+		return "", storage.ErrNotConfigured
+	}
+	return s.store.PresignDownload(key, s.urlExpiry)
+}
 
 func (s *ArtifactService) Get(id uuid.UUID) (*models.Artifact, error) { return s.repo.GetByID(id) }
 

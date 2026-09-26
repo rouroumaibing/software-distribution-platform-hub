@@ -27,6 +27,9 @@ func (h *ArtifactHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/artifacts/:id/download", h.Download)
 	// POST (not GET) so it doesn't collide with /artifacts/:id in gin's tree.
 	rg.POST("/artifacts/upload-url", h.UploadURL)
+	// G-6：按 storage key 签发 GET URL（不要求登记过制品行），runner 的
+	// consume init 容器用它在流水线任务间搬运产物。
+	rg.POST("/artifacts/storage-url", h.StorageURL)
 	rg.DELETE("/artifacts/:id", h.Delete)
 }
 
@@ -74,7 +77,7 @@ func (h *ArtifactHandler) Download(c *gin.Context) {
 		common.Fail(c, http.StatusInternalServerError, err)
 		return
 	}
-	common.OK(c, gin.H{"url": url, "expiresInSeconds": h.expirySeconds()})
+	common.OKNoEscape(c, gin.H{"url": url, "expiresInSeconds": h.expirySeconds()})
 }
 
 // UploadURLRequest asks the hub to mint a signed PUT URL for an archive task
@@ -99,11 +102,32 @@ func (h *ArtifactHandler) UploadURL(c *gin.Context) {
 		common.Fail(c, http.StatusBadRequest, err)
 		return
 	}
-	common.OK(c, gin.H{"url": url, "expiresInSeconds": h.expirySeconds()})
+	common.OKNoEscape(c, gin.H{"url": url, "expiresInSeconds": h.expirySeconds()})
 }
 
 func (h *ArtifactHandler) expirySeconds() int {
 	return int(h.svc.URLExpiry().Seconds())
+}
+
+// StorageURL mints a signed GET URL for a raw storage key (G-6 consume).
+// Unlike Download (by artifact id) this does not require the key to be
+// registered — intra-pipeline hand-offs are ephemeral by design.
+func (h *ArtifactHandler) StorageURL(c *gin.Context) {
+	var req UploadURLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	url, err := h.svc.KeyDownloadURL(req.Key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotConfigured) {
+			common.Fail(c, http.StatusServiceUnavailable, err)
+			return
+		}
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	common.OKNoEscape(c, gin.H{"url": url, "expiresInSeconds": h.expirySeconds()})
 }
 
 func (h *ArtifactHandler) Delete(c *gin.Context) {

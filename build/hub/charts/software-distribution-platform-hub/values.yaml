@@ -67,6 +67,10 @@ artifact:
   publicUrl: http://hub.sdp-workflow.svc:8080
   storage: 10Gi
 
+# G-1（2026-09-26）：执行 Job 的 ServiceAccount 名（runner 侧幂等 ensure SA+RBAC）。
+# 置空字符串回退旧行为（Job 用运行命名空间的 default SA，无部署权限）。
+jobServiceAccount: sdp-deploy
+
 log:
   level: info
 

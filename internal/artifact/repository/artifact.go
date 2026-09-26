@@ -36,6 +36,19 @@ func (r *ArtifactRepository) FindByComponentID(componentID uuid.UUID, p common.P
 	return r.List(p, func(db *gorm.DB) *gorm.DB { return liveForComponent(db, componentID) })
 }
 
+// ExistsByComponentAndKey reports whether a live (non-cleanup-pending) row
+// already registers this storage key for the component. G-14: ApplyStatus
+// callbacks fire once per status update, so RegisterProduced needs an
+// idempotency probe or every Succeeded re-report inserts a duplicate row
+// (2026-09-26 实测：一个 run 重复登记 7 行).
+func (r *ArtifactRepository) ExistsByComponentAndKey(componentID uuid.UUID, key string) (bool, error) {
+	var n int64
+	err := r.DB.Model(&models.Artifact{}).
+		Where("component_id = ? AND storage_key = ?", componentID, key).
+		Count(&n).Error
+	return n > 0, err
+}
+
 // expiredQuery is the **GC** predicate: rows whose retention has lapsed, oldest
 // first, bounded by limit.
 //

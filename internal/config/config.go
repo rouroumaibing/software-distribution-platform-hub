@@ -92,6 +92,15 @@ type Config struct {
 	// 一个会删数据的作业不该由一次部署悄悄打开（set ARTIFACT_GC_INTERVAL=3600
 	// for an hourly pass）。
 	ArtifactGCInterval time.Duration
+
+	// JobServiceAccount (G-1, env SDP_JOB_SERVICE_ACCOUNT) is the
+	// ServiceAccount name injected into every dispatched PipelineRunSpec so
+	// execution Jobs run with deploy permissions instead of the namespace's
+	// default SA (which cannot deploy). The runner side idempotently creates
+	// this SA + a least-privilege deploy Role/RoleBinding in the run
+	// namespace before creating Jobs. Empty disables injection (legacy
+	// behavior: Jobs run as the namespace default SA).
+	JobServiceAccount string
 	// ArtifactGCBatch bounds how many expired rows one GC pass touches. Zero
 	// falls back to service.DefaultArtifactGCBatch. The bound matters because
 	// each row costs one blocking object-store call.
@@ -171,6 +180,10 @@ func Load() *Config {
 		// 默认 0 = 关闭：保留期 GC 会**删**制品，必须显式开启。
 		ArtifactGCInterval: time.Duration(getenvInt("ARTIFACT_GC_INTERVAL", 0)) * time.Second,
 		ArtifactGCBatch:    getenvInt("ARTIFACT_GC_BATCH", 0),
+
+		// G-1：注入执行 Job 的 SA 名；runner 会在运行命名空间幂等 ensure
+		// 该 SA + 最小部署 Role/RoleBinding。置空则回到旧行为（default SA）。
+		JobServiceAccount: getenv("SDP_JOB_SERVICE_ACCOUNT", "sdp-deploy"),
 
 		// Package version matrix (§9.10): defaults to "dev" when the CM is not
 		// mounted (local `go run`, or a deploy that hasn't rendered it). The

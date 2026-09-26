@@ -72,6 +72,11 @@ spec:
               value: {{ .Values.artifact.localRoot }}
             - name: ARTIFACT_STORE_PUBLIC_URL
               value: {{ .Values.artifact.publicUrl }}
+            # G-1（2026-09-26）：注入执行 Job 的 ServiceAccount 名，runner 会在
+            # 运行命名空间幂等 ensure 该 SA + 最小部署 Role/RoleBinding。
+            # 置空回退旧行为（Job 用 ns default SA，无部署权限）。
+            - name: SDP_JOB_SERVICE_ACCOUNT
+              value: {{ .Values.jobServiceAccount | default "sdp-deploy" }}
             # 版本矩阵（CM package-versions，模板 configmap-package-versions.yaml）：
             # 供接入管理展示与 runner 安装/升级取值
             - name: PACKAGE_VERSION_CONSOLE

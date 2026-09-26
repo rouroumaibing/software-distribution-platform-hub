@@ -153,6 +153,16 @@ type PipelineRunService struct {
 	// stays unchanged; nil means "no platform-level production policy".
 	productionPolicy ProductionPolicy
 
+	// artifactRegistry (G-2) registers a task's Produces keys with the
+	// artifact store when the task reaches Succeeded. Setter-wired like
+	// productionPolicy; nil disables registration.
+	artifactRegistry ArtifactRegistry
+
+	// jobServiceAccount (G-1) is injected into every dispatched
+	// PipelineRunSpec.ServiceAccountName. Setter-wired; empty = legacy
+	// behavior (Jobs run as the namespace default SA).
+	jobServiceAccount string
+
 	// sweepInterval controls how often SweepPending retries failed dispatch
 	// jobs. Overridable in tests; defaults to 15s.
 	sweepInterval time.Duration
@@ -390,6 +400,9 @@ func (s *PipelineRunService) ApplyStatus(ctx context.Context, targetID uuid.UUID
 		if err := s.taskRepo.SaveStatus(run.ID, ts); err != nil {
 			return err
 		}
+		// G-2：任务 Succeeded 且模板声明了 Produces → 登记制品行，前端制品
+		// Tab 才有数据。Best-effort，失败不影响状态回写。
+		s.registerProducedArtifacts(run, ts)
 	}
 	return nil
 }
@@ -612,6 +625,11 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 		TargetNamespace: req.TargetNamespace,
 		TriggeredBy:     req.TriggeredBy,
 	}
+	// G-1：执行 Job 必须带部署权限的 SA。runner 侧会在运行命名空间幂等
+	// ensure 该 SA + 最小部署 Role/RoleBinding（见 runner ensureRunRBAC）。
+	if s.jobServiceAccount != "" {
+		spec.ServiceAccountName = s.jobServiceAccount
+	}
 	if spec.TargetNamespace == "" {
 		spec.TargetNamespace = "sdp-run"
 	}
@@ -621,6 +639,8 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 	if len(req.Params) > 0 {
 		spec.Params = req.Params
 	}
+	// G-5（hub 半边）：`${KEY}` 文本替换在触发时完成，模板保持静态。
+	subst := paramsMap(req.Params)
 
 	var prevStageTaskNames []string
 	for _, stage := range stages {
@@ -630,7 +650,7 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 		}
 		var stageTaskNames []string
 		for _, tpl := range templates {
-			task, err := templateToTaskSpec(&tpl)
+			task, err := templateToTaskSpec(&tpl, subst)
 			if err != nil {
 				return nil, err
 			}
@@ -665,18 +685,21 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 // templateToTaskSpec converts a definition-level PipelineTaskTemplate into the
 // runner-facing PipelineTaskSpec, decoding the JSON fields stored on the
 // template (script args, produces/consumes, retry policy, and the
-// type-specific ApprovalConfig / RolloutConfig).
-func templateToTaskSpec(tpl *pipelinemodels.PipelineTaskTemplate) (*runnerapi.PipelineTaskSpec, error) {
+// type-specific ApprovalConfig / RolloutConfig). params (may be nil) drives
+// the hub-side `${KEY}` substitution (G-5).
+func templateToTaskSpec(tpl *pipelinemodels.PipelineTaskTemplate, params map[string]string) (*runnerapi.PipelineTaskSpec, error) {
 	task := &runnerapi.PipelineTaskSpec{
 		Name:           tpl.Name,
 		Type:           tpl.Type,
-		Image:          tpl.Image,
-		ScriptPath:     tpl.ScriptPath,
+		Image:          substituteParams(tpl.Image, params),
+		ScriptPath:     substituteParams(tpl.ScriptPath, params),
 		TimeoutSeconds: int64(tpl.TimeoutSeconds),
+		Privileged:     tpl.Privileged,
 	}
 	if err := json.Unmarshal(tpl.ScriptArgs, &task.ScriptArgs); err != nil {
 		return nil, fmt.Errorf("task %q scriptArgs: %w", tpl.Name, err)
 	}
+	task.ScriptArgs = substituteParamsSlice(task.ScriptArgs, params)
 	// Build tasks carry an inline command + args; falls back to ScriptPath
 	// when Command is empty (script escape hatch).
 	if len(tpl.Command) > 0 {
@@ -684,17 +707,21 @@ func templateToTaskSpec(tpl *pipelinemodels.PipelineTaskTemplate) (*runnerapi.Pi
 			return nil, fmt.Errorf("task %q command: %w", tpl.Name, err)
 		}
 	}
+	task.Command = substituteParamsSlice(task.Command, params)
 	if len(tpl.Args) > 0 {
 		if err := json.Unmarshal(tpl.Args, &task.Args); err != nil {
 			return nil, fmt.Errorf("task %q args: %w", tpl.Name, err)
 		}
 	}
+	task.Args = substituteParamsSlice(task.Args, params)
 	if err := json.Unmarshal(tpl.Produces, &task.Produces); err != nil {
 		return nil, fmt.Errorf("task %q produces: %w", tpl.Name, err)
 	}
+	task.Produces = substituteParamsSlice(task.Produces, params)
 	if err := json.Unmarshal(tpl.Consumes, &task.Consumes); err != nil {
 		return nil, fmt.Errorf("task %q consumes: %w", tpl.Name, err)
 	}
+	task.Consumes = substituteParamsSlice(task.Consumes, params)
 	if len(tpl.RetryPolicy) > 0 && string(tpl.RetryPolicy) != "null" {
 		var rp runnerapi.RetryPolicy
 		if err := json.Unmarshal(tpl.RetryPolicy, &rp); err != nil {
@@ -724,6 +751,7 @@ func templateToTaskSpec(tpl *pipelinemodels.PipelineTaskTemplate) (*runnerapi.Pi
 			if err := json.Unmarshal(tpl.ReleaseConfig, &rs); err != nil {
 				return nil, fmt.Errorf("task %q releaseConfig: %w", tpl.Name, err)
 			}
+			substituteReleaseSpec(&rs, params)
 			task.ReleaseSpec = &rs
 		}
 	}
