@@ -6,11 +6,12 @@ metadata:
   labels:
     app: {{ .Values.basic.component }}
 spec:
-  type: NodePort
+  # hub 经 Gateway（Envoy Gateway）对外，不再 NodePort 直连（2026-09-28 网关拆分：
+  # hub 独立 HTTPRoute PathPrefix /api -> hub svc，与 console 拆为两条独立路由）。
+  type: ClusterIP
   selector:
     app: {{ .Values.basic.component }}
   ports:
     - name: http
       port: {{ .Values.service.externPort }}
       targetPort: {{ .Values.service.containerPort }}
-      nodePort: {{ .Values.service.nodePort }}

@@ -9,7 +9,7 @@
 # OIDC 正式链路走 https；keycloak 后端保持 HTTP，
 # proxy.mode=xforwarded 由 envoy 注入的 X-Forwarded-* 推导前端地址（见 values 注释）。
 #
-# Gateway（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（根目录 deploy/gateway-sdp.yaml，
+# Gateway（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（local-kind-dev/deploy/gateway-sdp.yaml，
 # 不随仓分发），本 chart 按名字引用（gatewayRoute.name，可 --set 覆盖）——保持独立可装：
 # 没有网关时本路由只是 Pending，不影响 hub/keycloak 自身运行。
 apiVersion: gateway.networking.k8s.io/v1

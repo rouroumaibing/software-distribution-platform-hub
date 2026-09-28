@@ -52,7 +52,7 @@ spec:
               value: {{ .Values.auth.adminClientSecret | quote }}
             {{- end }}
             {{- if .Values.auth.trustedCASecret }}
-            # dev-only 脚手架：issuer 走自签证书（本地 gen-certs.sh 的 sdp-local-ca）时，
+            # dev-only 脚手架：issuer 走自签证书（本地 cert-create.sh 的 sdp-local-ca）时，
             # 挂 CA 并用 SSL_CERT_FILE 替换 Go 系统信任池（crypto/x509 在 Linux 上读该变量）。
             # 生产用公共 CA，留空即不渲染（也不影响 Go 默认池）。
             - name: SSL_CERT_FILE
@@ -124,7 +124,7 @@ spec:
           secret:
             secretName: {{ .Values.auth.trustedCASecret }}
             items:
-              # gen-certs.sh 约定：console-tls 含 ca.crt / server.crt / server.key
+              # cert-create.sh 约定：console-tls 含 ca.crt / server.crt / server.key
               - key: ca.crt
                 path: ca.crt
         {{- end }}

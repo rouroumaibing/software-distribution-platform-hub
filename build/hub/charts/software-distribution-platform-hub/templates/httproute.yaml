@@ -1,0 +1,33 @@
+{{- if .Values.gatewayRoute.enabled }}
+# hub 对外 API 路由（Envoy Gateway / Gateway API）：与 console 拆为**两条独立路由**，
+# hub 不再经 console nginx 反代（console 只服务前端 SPA，/api 由网关直连 hub）。
+#
+# 共用同一 Gateway（sdp-gateway）与同一对外主机 www.sdpworkflow.com；
+# 用 PathPrefix /api 把 /api/* 路由到 hub svc（ClusterIP，明文后端，与现状一致）。
+# Gateway（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（local-kind-dev/deploy/gateway-sdp.yaml，
+# 不随仓分发），本 chart 按名字引用（gatewayRoute.name，可 --set 覆盖）——保持独立可装：
+# 没有网关时本路由只是 Pending，不影响 hub 自身运行。
+# parentRefs 不指定 sectionName => 同时挂 http/https listener。
+#
+# hub 后端保持明文（与 console 不同：console 443 必须 TLS 故加 BackendTLSPolicy）；
+# 若将来要对 hub 后端做 mTLS 校验，再补 BackendTLSPolicy 引用 hub-tls（server 证书 SAN
+# 已覆盖 hub.<ns>.svc.cluster.local 链，见 cert-create.sh / CERTIFICATES.md）。
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hub
+  namespace: {{ .Values.namespace }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gatewayRoute.name }}
+  hostnames:
+    - {{ .Values.gatewayRoute.hostname }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: {{ .Values.basic.component }}
+          port: {{ .Values.service.externPort }}
+{{- end }}

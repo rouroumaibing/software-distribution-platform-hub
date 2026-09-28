@@ -12,7 +12,8 @@ basic:
 service:
   containerPort: 8080
   externPort: 8080
-  nodePort: 30080
+  # 2026-09-28 网关拆分：hub 不再 NodePort 直连（改 ClusterIP，经 Gateway /api 路由），
+  # 故 nodePort 字段已弃用（service.yaml 不再引用）；保留注释以标记历史用途，勿重新启用。
 
 image:
   imageAddr: localhost:5000/software-distribution-platform-hub:v0.0.1
@@ -45,7 +46,7 @@ auth:
   # 取值须与 realm 预置里 sdp-backend 的 secret 字面量一致（keycloak-realm-configmap.yaml）。
   # 置空 => issuer 打开时也只告警不建组（cmd/hub main()）。生产改 valueFrom secretKeyRef。
   adminClientSecret: ""
-  # dev-only 脚手架：issuer 走自签证书（本地 gen-certs.sh 的 sdp-local-ca）时，挂该 secret 的
+  # dev-only 脚手架：issuer 走自签证书（本地 cert-create.sh 的 sdp-local-ca）时，挂该 secret 的
   # ca.crt 到 /etc/sdp-ca 并设 SSL_CERT_FILE。生产用公共 CA，留空。
   trustedCASecret: ""
   # dev-only 脚手架：hub 解析不到 issuer 域名时，把 <gatewayRoute.hostname> 指到该 IP
@@ -82,9 +83,10 @@ packageVersions:
   hub: v0.0.1
   runner: v0.0.1
 
-# 对外路由（Envoy Gateway / Gateway API）：本 chart 只带 keycloak 的 HTTPRoute
-# （templates/keycloak-httproute.yaml，/keycloak 前缀 -> hub-keycloak-http:80）。
-# Gateway 级资源（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（根目录 deploy/，
+# 对外路由（Envoy Gateway / Gateway API）：本 chart 带两条 HTTPRoute ——
+#   - templates/httproute.yaml：hub API 路由（PathPrefix /api -> hub svc:8080，ClusterIP 明文后端）；
+#   - templates/keycloak-httproute.yaml：keycloak 路由（/keycloak 前缀 -> hub-keycloak-http:80）。
+# Gateway 级资源（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（local-kind-dev/deploy/，
 # 不随仓分发）——本 chart 按名字引用，保持独立可装；名字可 helm --set gatewayRoute.name=... 覆盖。
 gatewayRoute:
   enabled: true
