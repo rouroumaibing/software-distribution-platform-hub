@@ -1,6 +1,6 @@
 {{- if .Values.gatewayRoute.enabled }}
 # hub 对外 API 路由（Envoy Gateway / Gateway API）：与 console 拆为**两条独立路由**，
-# hub 不再经 console nginx 反代（console 只服务前端 SPA，/api 由网关直连 hub）。
+# hub 不经 console nginx 反代（console 只服务前端 SPA，/api 由网关直连 hub）。
 #
 # 共用同一 Gateway（sdp-gateway）与同一对外主机 www.sdpworkflow.com；
 # 用 PathPrefix /api 把 /api/* 路由到 hub svc（ClusterIP，明文后端，与现状一致）。

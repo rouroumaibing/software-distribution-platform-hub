@@ -1,6 +1,6 @@
 {{- if .Values.gatewayRoute.enabled }}
 # Keycloak 对外路由（/keycloak 前缀）：替代 keycloakx 子 chart 的 Ingress
-# （keycloak.ingress.enabled 已置 false —— ingress-nginx 已废弃）。
+# （keycloak.ingress.enabled 为 false —— 不使用 ingress-nginx）。
 #
 # 路由语义与原 Ingress 等价：host www.sdpworkflow.com、Prefix /keycloak、后端 HTTP svc 80。
 # Gateway API 按「路径最长前缀」优先，/keycloak 天然先于 console 的 / 命中，

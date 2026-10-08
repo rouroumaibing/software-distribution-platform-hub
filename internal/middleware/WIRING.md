@@ -20,48 +20,50 @@ func setupRouter(deps *Dependencies) *gin.Engine {
 	deps.OrgHandler.RegisterRoutes(api)
 	deps.TargetHandler.RegisterRoutes(api)
 
-	// 4. 需要按组件校验权限的路由,单独在路由组上加 RequirePermission
-	//
-	// Requirement 里的 Resource 说明**路径里那个 id 是什么资源**:
-	//   ResourceComponent            —— 参数本身就是 component id,直接查绑定;
-	//   ResourcePipeline / ResourceRun
-	//                                —— 参数是流水线 / 运行**自己的** id,必须先由
-	//                                  locator 反查它所属的 component,再拿那个
-	//                                  component 查绑定。
-	//
-	// 漏掉反查的后果不是"变松"而是"全拒":拿 pipeline id 去查 component 绑定
-	// 永远查不到,一旦开了鉴权这些路由**恒 403**。
-	// 规范与对账见 ACCOUNT-PERMISSION-MODEL.md §10 第 14 行。
-	locator := permissionsvc.NewComponentLocator(deps.PipelineRepo, deps.PipelineRunRepo)
-	guarded := func(res middleware.Resource, param, action string, h gin.HandlerFunc) []gin.HandlerFunc {
-		return []gin.HandlerFunc{middleware.RequirePermission(deps.BindingService, locator, middleware.Requirement{
-			Resource:   res,
-			Param:      param,
-			Permission: action,
-		}), h}
+	// 4. 组件类路由（pipeline/run 的 handler）：**组件类管理路由本身裸挂**在
+	//    api 上（`pipelineHandler.RegisterRoutes(api)` 等），不带组件级守卫；
+	//    只有组件作用域的运行类路由在**开鉴权时**挂两层守卫（§4 鉴权链是
+	//    两段固定顺序，短路语义一致）：
+	//    a 段 RequireResourceOwnership —— 资源归属（吃 token 的 `/org:<slug>`，查 resource_ownership）
+	//    b 段 RequirePermission —— RBAC 决策（吃 hub 绑定表，按 token `sub`/组查绑定）
+	//    Requirement 里的 Resource 说明**路径里那个 id 是什么资源**:
+	//      ResourcePipeline / ResourceRun
+	//                                  —— 参数是流水线 / 运行**自己的** id，必须先由
+	//                                    permLocator 反查它所属的 component，再拿那个
+	//                                    component 查归属/绑定。
+	//    漏掉反查的后果不是"变松"而是"全拒"：拿 pipeline id 去查 component 绑定
+	//    永远查不到，一旦开了鉴权这些路由**恒 403**。
+	//    规范与对账见 ACCOUNT-PERMISSION-MODEL.md §10 第 14 行。
+	permLocator := permissionsvc.NewComponentLocator(deps.PipelineRepo, deps.PipelineRunRepo)
+	wrap := func(res middleware.Resource, param, perm string, h gin.HandlerFunc) []gin.HandlerFunc {
+		if deps.Auth == nil {
+			return []gin.HandlerFunc{h} // dev：鉴权关闭，裸挂
+		}
+		req := middleware.Requirement{Resource: res, Param: param, Permission: perm}
+		return []gin.HandlerFunc{
+			middleware.RequireResourceOwnership(deps.ResourceOwnershipSvc, deps.OrgRepo, permLocator, req),
+			middleware.RequirePermission(deps.BindingService, permLocator, req),
+			h,
+		}
 	}
 
-	componentScoped := api.Group("/")
-	{
-		// :id 就是 component id —— 直接查该组件的绑定
-		componentScoped.GET(
-			"/components/:id/pipelines",
-			guarded(middleware.ResourceComponent, "id", permmodels.ActionPipelineRead, deps.PipelineHandler.ListByComponent)...,
-		)
+	scoped := api.Group("/")
+	// 注：实际接线没有 ResourceComponent 的用法 —— 组件 id 类路由
+	// （如 GET /components/:id/pipelines，挂在 pipelineHandler 等裸注册里）
+	// 不经过这里的守卫。
+	//
+	// :id 是 **pipeline id** —— 先反查所属 component，再依次查归属/绑定；
+	// 生产环境部署另外在 service 层做一次强制审批校验
+	scoped.POST(
+		"/pipelines/:id/runs",
+		wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineTrigger, deps.PipelineRunHandler.Trigger)...,
+	)
 
-		// :id 是 **pipeline id** —— 先反查所属 component 再查绑定;
-		// 生产环境部署另外在 service 层做一次强制审批校验
-		componentScoped.POST(
-			"/pipelines/:id/runs",
-			guarded(middleware.ResourcePipeline, "id", permmodels.ActionPipelineTrigger, deps.PipelineRunHandler.Trigger)...,
-		)
-
-		// :id 是 **run id** —— 两跳:run → pipeline → component
-		componentScoped.POST(
-			"/runs/:id/redispatch",
-			guarded(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, deps.PipelineRunHandler.Redispatch)...,
-		)
-	}
+	// :id 是 **run id** —— 两跳：run → pipeline → component
+	scoped.POST(
+		"/runs/:id/redispatch",
+		wrap(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, deps.PipelineRunHandler.Redispatch)...,
+	)
 
 	return r
 }

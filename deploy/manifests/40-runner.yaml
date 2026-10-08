@@ -20,7 +20,7 @@ spec:
       serviceAccountName: sdp-runner
       containers:
         - name: runner
-          image: localhost:5000/software-distribution-platform-runner:v0.0.1
+          image: harbor.sdpworkflow.com/sdp/software-distribution-platform-runner:v0.0.1
           imagePullPolicy: Always
           env:
             - name: HUB_GATEWAY_URL

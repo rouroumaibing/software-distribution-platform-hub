@@ -18,7 +18,7 @@ func NewOrgHandler(svc *service.OrgService) *OrgHandler { return &OrgHandler{svc
 // RegisterRoutes mounts the read + create/update surface on the versioned api
 // group.
 //
-// 显式注册（不再用 common.RegisterCRUD）是因为 org 的**删除**要单独挂平台守卫
+// 显式注册（不采用 common.RegisterCRUD）是因为 org 的**删除**要单独挂平台守卫
 // ——RegisterCRUD 一次注册五个方法，无法只把 DELETE 分到另一个 group。
 func (h *OrgHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/orgs", h.Create)

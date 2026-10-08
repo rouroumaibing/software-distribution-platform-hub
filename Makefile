@@ -47,10 +47,10 @@ endif
 
 # swaggo docs（F-1 已裁决，2026-09-15）：
 #   docs/{docs.go,swagger.json,swagger.yaml} 由 `swag init` 生成，但 docs.go 是
-#   **编译必需输入**（cmd/hub/main.go:18 空白导入注册 swagger spec）。
+#   **编译必需输入**（cmd/hub/main.go:20 空白导入注册 swagger spec）。
 #   生成物分岔规则：**编译/打包必需 → 入库**（同 runner 的 controller-gen 产物）；只有纯运行/
 #   本地便利产物才忽略 + 可 clean（见 docs 仓 BUILD-ARTIFACTS.md 附 C 的双向钢人论证）。
-#   因此：这三个文件**已入库**、`.gitignore` 不再忽略、**clean 默认不删**。
+#   因此：这三个文件**已入库**、`.gitignore` **不忽略**、**clean 默认不删**。
 #   仅当确认要放弃本地构建能力时才用 PURGE_DOCS=1（删后 `make build` 必挂，需 git checkout 恢复）。
 DOCS_GEN := docs/docs.go docs/swagger.json docs/swagger.yaml
 ifeq ($(PURGE_DOCS),)

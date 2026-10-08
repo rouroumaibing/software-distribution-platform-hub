@@ -371,7 +371,7 @@ func (s *PipelineVersionService) Rollback(pipelineID uuid.UUID, version int, cre
 
 // clearStructure soft-deletes every live stage of the pipeline; the task
 // templates under each stage go with it via the service-level cascade (the DDL
-// `on delete cascade` no longer fires once both sides are soft-deleted).
+// `on delete cascade` does not fire once both sides are soft-deleted).
 func (s *PipelineVersionService) clearStructure(pipelineID uuid.UUID) error {
 	stages, err := s.stages.ListByPipelineID(pipelineID)
 	if err != nil {

@@ -41,7 +41,7 @@ type PipelineParent interface {
 
 // TemplateCascade 让 stage 软删时把其下任务模板一并软删。DDL 上
 // pipeline_task_templates.stage_id 是 `on delete cascade`，但那条级联只在**硬删**
-// 时触发 —— 两个模型都改为软删（common.Base）后它就成了死条款。缺了这一步会留下
+// 时触发；两个模型均为软删（common.Base），它是死条款。缺了这一步会留下
 // "挂到已删 stage 上的活模板"：API 读不到（EnsureStageExists 返 404），行却是活的，
 // 且恢复语义断掉（stage 恢复回来、模板状态不一致）。
 //
@@ -192,7 +192,7 @@ func (s *StageService) Update(id uuid.UUID, in *models.PipelineStage) (*models.P
 }
 
 // Delete soft-deletes a stage and, in a service-level cascade, its task
-// templates (see TemplateCascade: the DDL's on delete cascade no longer fires
+// templates (see TemplateCascade: the DDL's on delete cascade does not fire
 // once both sides are soft-deleted).
 //
 // 模板先删、stage 后删：这样级联失败时 stage 仍然存活，整个删除是**可重试**的；

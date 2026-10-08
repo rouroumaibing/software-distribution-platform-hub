@@ -146,9 +146,8 @@ func (s *EnvironmentService) Test(id uuid.UUID) (*TestReport, error) {
 	}
 	// Fill in the report *before* it is serialized and persisted: the response
 	// the caller gets and the snapshot stored in last_test_result must be the
-	// same object. (Previously only env.Status was set, so the API returned an
-	// empty `status` and the archived snapshot carried neither status nor
-	// testedAt — the console had nothing to render.)
+	// same object, and both must carry the status and testedAt the console
+	// renders.
 	report.Status = status
 	report.TestedAt = now.Format(time.RFC3339)
 

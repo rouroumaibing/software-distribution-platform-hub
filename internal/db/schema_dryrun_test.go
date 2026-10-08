@@ -67,7 +67,7 @@ func createTableStmt(ddl, table string) string {
 	return ""
 }
 
-// B-15：pipeline_stages / pipeline_task_templates 补 deleted_at，且唯一性改为
+// B-15：pipeline_stages / pipeline_task_templates 带 deleted_at，唯一性为
 // "只作用于未软删行"的 partial unique index —— 与 pipelines 的
 // idx_pipelines_component_name_active（0006）同手法。
 func TestSchema_StageAndTaskTemplateAreSoftDeleted(t *testing.T) {

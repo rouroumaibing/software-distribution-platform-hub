@@ -112,8 +112,24 @@ func (h *HubServer) ServeWS(c *gin.Context) {
 	}
 	tg, err := h.targetSvc.GetByName(targetName)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown target"})
-		return
+		// Bootstrap-on-first-connect (ADR-0001): a Runner presenting a valid
+		// gateway token may self-enroll a not-yet-registered target by carrying
+		// its registry attributes on the dial (GitLab-Runner-style enrollment).
+		// Absent headers => plain 404, so a misconfigured target name still
+		// fails loudly instead of silently creating a junk row.
+		vendor := c.GetHeader("X-Target-Vendor")
+		region := c.GetHeader("X-Target-Region")
+		if vendor == "" || region == "" {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "unknown target"})
+			return
+		}
+		tg, err = h.targetSvc.Enroll(targetName, vendor, region)
+		if err != nil {
+			applog.Infof("gateway: enroll target %s failed: %v", targetName, err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "enroll failed"})
+			return
+		}
+		applog.Infof("gateway: target %s auto-enrolled (vendor=%s region=%s)", targetName, vendor, region)
 	}
 
 	ws, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)

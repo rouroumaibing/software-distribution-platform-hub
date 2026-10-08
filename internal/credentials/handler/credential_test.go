@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Regression: reHasClusters previously lacked the (?m) flag, so a kubeconfig
+// reHasClusters must carry the (?m) flag, so a kubeconfig
 // whose "clusters:" key was not preceded only by whitespace (i.e. any real
 // kubeconfig with apiVersion/kind/current-context above it) was reported as
 // missing the clusters section.

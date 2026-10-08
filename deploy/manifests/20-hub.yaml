@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: hub
-          image: localhost:5000/software-distribution-platform-hub:v0.0.1
+          image: harbor.sdpworkflow.com/sdp/software-distribution-platform-hub:v0.0.1
           imagePullPolicy: Always
           env:
             - name: HUB_ADDR

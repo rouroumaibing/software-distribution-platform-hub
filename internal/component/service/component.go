@@ -147,12 +147,12 @@ func (s *ComponentService) Update(id uuid.UUID, c *models.Component) error {
 // artifacts 打 pending_deletion+expires_at 清理标记）；未装配时退回旧行为——
 // 只软删 component 自身（脱库单测与无 DB 装配路径）。
 //
-// 残余竞态已关闭（STATUS §2 #12，2026-09-25）：下方 fast-path 判定用于即时 409 UX；
+// 活跃运行判定与级联删除在**同一事务**（STATUS §2 #12）：下方 fast-path 判定用于即时 409 UX；
 // 真正的原子性由级联事务内的 guard 保证 —— 删除组件/服务时，活跃运行计数在**同一
 // 事务**里复检，并发插入的 run 会被 guard 看到、整事务回滚、返回结构化 409。
 // 设计裁定（双向钢人论证）：把计数收进级联事务是值得的——窗口虽小、后果虽"只是
 // 历史 run 挂在软删组件上"，但它是 DELETE-CONTRACT §6.4 #6 唯一硬规则的实质性
-// 例外路径，原子化后该硬规则不再有可绕过口子，且 run repo 已支持 tx 绑定、改动局部。
+// 例外路径，收进同一事务后该硬规则没有可绕过口子，且 run repo 支持 tx 绑定、改动局部。
 func (s *ComponentService) Delete(id uuid.UUID) error {
 	if s.runCounter != nil {
 		n, err := s.runCounter.CountActiveByComponent(id, activePhases)

@@ -55,7 +55,7 @@ func (h *PipelineRunHandler) Trigger(c *gin.Context) {
 	runs, err := h.svc.Trigger(pipelineID, &req)
 	if err != nil {
 		// AbortWithError 归一化错误：缺失/软删的 pipeline (gorm.ErrRecordNotFound)
-		// 与明确的域错误都映射成正确状态码 (404 / 403 / 500)，不再一刀切 500
+		// 与明确的域错误都映射成正确状态码 (404 / 403 / 500)，而非一刀切 500
 		// (run 触发路径未补齐项 #1)。
 		common.AbortWithError(c, err)
 		return

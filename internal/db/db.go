@@ -94,13 +94,13 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&pipelinemodels.Pipeline{}, &pipelinemodels.PipelineStage{}, &pipelinemodels.PipelineTaskTemplate{}, &pipelinemodels.PipelineVersion{},
 		&artifactmodels.Artifact{},
 		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{}, &runmodels.PipelineApproval{},
-		// D3：不再有 `users` 表 —— hub 对身份无状态（ACCOUNT-PERMISSION-MODEL
+		// 无 `users` 表（D3）—— hub 对身份无状态（ACCOUNT-PERMISSION-MODEL
 		// §2.2），主体一律取 token `sub`。Role 仍保留（V1 `roles` 表本身不在
 		// D3 的确认范围内，见 plans/UNIMPLEMENTED-MODULES-PLAN.md §14）。
 		&permmodels.Role{}, &permmodels.ComponentRoleBinding{},
 		&permmodels.PlatformRole{}, &permmodels.PlatformRoleBinding{}, &permmodels.ComponentRole{},
 		// ACCOUNT-PERMISSION-MODEL §3 / §5.1③ / §6 / §7.2 — the four tables
-		// that complete the permission model (2026-09-22 第八批).
+		// that complete the permission model.
 		&permmodels.ResourceOwnership{}, &permmodels.RoleAPIMapping{},
 		&permmodels.AuditLog{}, &permmodels.PermissionRequest{},
 	); err != nil {

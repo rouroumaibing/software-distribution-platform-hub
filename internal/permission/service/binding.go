@@ -24,10 +24,10 @@ type BindingService struct {
 	roleActions RoleActionLookup
 }
 
-// NewBindingService wires the authorization service. It no longer takes the
-// V1 `roles` repository: D3 dropped component_role_bindings.role_id, so the
-// legacy per-role-permission branch this service used to resolve has no
-// column left to read from.
+// NewBindingService wires the authorization service. It does not take the
+// V1 `roles` repository: component_role_bindings has no role_id column (D3),
+// so there is no per-role-permission branch to resolve — subjects are named
+// by SubjectID alone.
 func NewBindingService(
 	repo *repository.BindingRepository,
 	componentRoleRepo *repository.ComponentRoleRepository,

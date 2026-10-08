@@ -6,7 +6,7 @@ metadata:
   labels:
     app: {{ .Values.basic.component }}
 spec:
-  # hub 经 Gateway（Envoy Gateway）对外，不再 NodePort 直连（2026-09-28 网关拆分：
+  # hub 经 Gateway（Envoy Gateway）对外，不经 NodePort 直连（网关拆分：
   # hub 独立 HTTPRoute PathPrefix /api -> hub svc，与 console 拆为两条独立路由）。
   type: ClusterIP
   selector:

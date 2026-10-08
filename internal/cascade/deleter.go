@@ -3,10 +3,10 @@
 // service tree removes its **in-domain descendants in the same transaction**,
 // instead of refusing because children exist.
 //
-// 为什么需要它: 本仓的删除长期只有"节点自身"这一层。父节点软删后，子表
+// 为什么需要它: 单表软删只置位节点自身的 deleted_at，父节点软删后，子表
 // (environments / configs / stages / task_templates / artifacts / bindings)
 // 没有 deleted_at 被置位 —— 这正是 §6.4 ② 点名的第一类残留「孤儿可见」。
-// §1.1 原来的"有下级即拒绝"被 §6.4 取代：**只有"活跃运行"是硬规则**，其余一律级联。
+// 故按 §6.4：**只有"活跃运行"是硬规则**，其余一律级联。
 //
 // 严格按 §6.4 结论清单落表:
 //
@@ -45,11 +45,10 @@ import (
 // same transaction *before* any row is touched. Callers use the guard to re-run
 // the "no active run" safety check (DELETE-CONTRACT §6.4 #6) against the
 // transaction's view of the data —— this is exactly what closes the §1.3 race
-// window: the service's pre-check (fast-path 409) and the cascade delete used to
-// be two separate transactions, so a run inserted in between could slip past the
-// check. Now the re-check and the delete are atomic: if the guard reports active
-// runs, the whole transaction rolls back and the caller returns the structured
-// 409.
+// window: a pre-check alone (fast-path 409) leaves room for a run inserted
+// between it and the delete, so the guard re-checks inside the same
+// transaction. If the guard reports active runs, the whole transaction rolls
+// back and the caller returns the structured 409.
 //
 // 依赖 *gorm.DB 而不是各模块 repository：跨 6 个模块的清理若逐 repo 调用，就不再是
 // 一个事务，§1.3 的缺口会原样回来。这是本包唯一的"直连 DB"，故刻意独立成包、
@@ -93,7 +92,7 @@ func (d *Deleter) DeleteServiceSubtree(serviceID uuid.UUID, guard func(tx *gorm.
 
 // 说明: 本包**刻意没有** `DeleteOrgSubtree`。`OrgService.Delete` 已经只做软删停用
 // （其注释："组织删除是高危操作,只做软删除,保留恢复窗口,不允许立刻级联物理清除下属
-// 全部资源"），与 §6.4 表格 #1 一致。这里不再提供一个同名方法 —— 那会让人以为
+// 全部资源"），与 §6.4 表格 #1 一致。这里不提供同名方法 —— 那会让人以为
 // "换个入口就能级联删 org"，而 §6.4 明确要求不要那样做。
 
 // deleteComponents 对 scope 选出的**每个** component 执行同一套子资源清理，最后软删

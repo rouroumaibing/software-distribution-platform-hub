@@ -36,6 +36,35 @@ func (s *TargetService) GetByName(name string) (*models.Target, error) {
 	return s.repo.GetByName(name)
 }
 
+// Enroll implements bootstrap-on-first-connect (ADR-0001): get-or-create a
+// target from Runner-supplied registry attributes, so installing a Runner
+// with its对接信息 completes the hookup without a manual console step —
+// GitLab-Runner-style enrollment. The caller (gateway.ServeWS) must have
+// authenticated the Runner with the gateway token first; Enroll itself
+// performs no authorization. A create that loses the uniqueIndex race
+// re-reads and returns the winner.
+func (s *TargetService) Enroll(name, vendor, region string) (*models.Target, error) {
+	if tg, err := s.repo.GetByName(name); err == nil {
+		return tg, nil
+	}
+	tg := &models.Target{
+		Name:       name,
+		Vendor:     vendor,
+		Region:     region,
+		TargetKind: models.TargetKindK8s,
+		Status:     models.TargetStatusOffline,
+	}
+	if err := s.repo.Create(tg); err != nil {
+		// Lost a concurrent-create race on the unique name index: the
+		// winner is the target row we hand back.
+		if again, gerr := s.repo.GetByName(name); gerr == nil {
+			return again, nil
+		}
+		return nil, err
+	}
+	return tg, nil
+}
+
 // Heartbeat is called by the gateway whenever a Runner Agent's connection
 // is (re)established, or on each periodic keepalive — not a user-facing
 // CRUD op, so it lives outside the standard Update() signature.

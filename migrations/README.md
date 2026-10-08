@@ -1,7 +1,7 @@
 # migrations/ —— 真实契约（2026-09-23 用真实 Postgres 16 实测后重写）
 
 本目录**不是**"从零建库的完整 schema"，也**不是**可以无脑顺序重放的脚本集合。
-在真库上实测之前，这里只有承诺、没有验证；实测推翻了三条承诺，故重写本文。
+本文以真实库实测为准（2026-09-23）：初版内容仅是承诺、未经实测，其中三条被实测推翻，全文按实测结果编写。
 
 ---
 
@@ -20,7 +20,7 @@ AutoMigrate 的特性决定了这条分工：**它只加不删**（不删列、�
 | 集合 | 文件 | 定位 | 能否在 AutoMigrate 建出的库上跑 |
 |---|---|---|---|
 | **引导集合** | `0001`–`0005` | 历史：P0 时代"用 SQL 从零建库"的产物 | ❌ **不能**。会报 `orgs already exists`、`column env_type already exists` 等 |
-| **运维集合** | `0006`–`0016` | 现行：在 AutoMigrate 之后应用的增量变更 | ✅ 可以，且**要求**先 AutoMigrate |
+| **运维集合** | `0006`–`0018` | 现行：在 AutoMigrate 之后应用的增量变更 | ✅ 可以，且**要求**先 AutoMigrate |
 
 实测记录（2026-09-23，PG 16.15）：
 
@@ -45,17 +45,17 @@ AutoMigrate 的特性决定了这条分工：**它只加不删**（不删列、�
 ### Path A —— 全新安装（= `deploy-local.sh` 的实际路径）
 
 ```
-起 Postgres ──► 启动 hub（AutoMigrate 建 31 张表）──► psql 0006..0016（全部空操作）
+起 Postgres ──► 启动 hub（AutoMigrate 建 33 张表）──► psql 0006..0018（全部空操作）
                                                             └─ 也可跑 cmd/hub/conf/import.sh 灌演示数据
 ```
 
 `deploy-local.sh` 本身**不跑 migrations**：全新库里 AutoMigrate 已经给出正确 schema，
-`0006`–`0016` 只是幂等的收敛脚本。
+`0006`–`0018` 只是幂等的收敛脚本。
 
 ### Path B —— 老库升级（已上线环境升到新版）
 
 ```
-备份 pg_dump ──► 停旧 hub ──► psql 0015 ──► 部署新版 hub（AutoMigrate）──► psql 0006..0014,0016
+备份 pg_dump ──► 停旧 hub ──► psql 0015 ──► 部署新版 hub（AutoMigrate）──► psql 0006..0014,0016..0018
                                  │
                                  └─ ⚠️ 0015 必须**先于**新版 hub 启动，见 §4
 ```

@@ -47,9 +47,7 @@ type PipelineService struct {
 }
 
 // NewPipelineService takes a VersionPublisher rather than a bare version repo.
-// 早前这里收的是 `VersionStore`（只有 Create），配一个**没人调用**的
-// `PublishVersion` 占位方法 —— 于是"结构改动要记版本"这件事在代码里根本没有
-// 落点。改为 receiver 接口后，PipelineService 只能**委托**发布，无法自行拼出
+// PipelineService 只能**委托**发布（receiver 接口约束），无法自行拼出
 // 一个半截版本；快照组装与版本号自增都归 PipelineVersionService 一家。
 func NewPipelineService(repo PipelineStore, versions VersionPublisher, runRepo PipelineRunExistence) *PipelineService {
 	return &PipelineService{repo: repo, versions: versions, runRepo: runRepo}
@@ -63,7 +61,7 @@ func (s *PipelineService) Create(p *models.Pipeline) error {
 func (s *PipelineService) Get(id uuid.UUID) (*models.Pipeline, error) { return s.repo.GetByID(id) }
 
 // GetByID is the liveness-aware read the run trigger routes through (run 触发
-// 路径改走 pipeline service 校验, 不再直读 repo). A missing or soft-deleted
+// 路径走 pipeline service 校验, 不直读 repo). A missing or soft-deleted
 // pipeline returns gorm.ErrRecordNotFound, which the run handler normalizes to
 // a 404 via common.AbortWithError — so triggering a dead pipeline is a clean
 // 404 instead of a 500.

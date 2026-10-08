@@ -172,9 +172,9 @@ func TestComponentListMatching_ExcludesExpiredGrants(t *testing.T) {
 	if !strings.Contains(sql, expiryClause) {
 		t.Fatalf("缺少到期过滤 —— 已过期的组件级授权会继续生效:\n%s", sql)
 	}
-	// D3 反向断言：V1 遗留分支（user_id）已随列一起删除。它若重新出现在 SQL
-	// 里，说明有人把「按本地 users.id 兜底」写了回来 —— 那张表已经不存在，
-	// 查询会直接报错而不是静默变松，所以这条断言要一直在。
+	// D3 反向断言：SQL 不允许出现 V1 遗留的 user_id 分支 —— 本地 users 表
+	// 不存在，若有人把「按本地 users.id 兜底」写了回来，查询会直接报错而不是
+	// 静默变松，所以这条断言要一直在。
 	if strings.Contains(sql, "user_id") {
 		t.Fatalf("V1 遗留 user_id 分支仍在生成（该列已随 D3 删除）:\n%s", sql)
 	}

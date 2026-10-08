@@ -4,18 +4,18 @@
 -- 表: roles(V1，只读)、component_role_bindings
 -- 前缀: e1=**已退役**(原 users) e2=roles e3=component_role_bindings
 -- 说明:
---   * D3 之后 hub **不存用户表**（ACCOUNT-PERMISSION-MODEL §2.2），所以这里不再
---     有 users 种子。绑定主体直接写 token 的 `sub`（§5.3：`subject_type='user'`
+--   * D3 之后 hub **不存用户表**（ACCOUNT-PERMISSION-MODEL §2.2），所以这里没有
+--     users 种子。绑定主体直接写 token 的 `sub`（§5.3：`subject_type='user'`
 --     时 subject_id 就是 `sub` 本身），演示值沿用 Keycloak 侧约定的
 --     `dev-keycloak-sub-*`。
 --   * 绑定一律走 §7 路径：subject_type / subject_id + component_role_id，
 --     角色指向 09_rbac_multiorg.sql 里的 component_roles。
---     V1 的 `user_id` / `role_id` 两列已随 migrations/0015 删除。
+--     V1 的 `user_id` / `role_id` 两列已不存在（随 migrations/0015 移除）。
 --   * V1 `roles` 表本批**保留**（`GET /roles` 仍可读），但它已不可被绑定 ——
 --     没有任何列再引用它。真正的组件级角色是 component_roles。
 -- ============================================================
 
--- ---------- V1 角色（仅历史展示；不再作为授权来源） ----------
+-- ---------- V1 角色（仅历史展示；不作为授权来源） ----------
 INSERT INTO roles (id, org_id, name, permissions, is_system, created_at) VALUES
 ('e2000000-0000-0000-0000-000000000001', NULL, 'Viewer', '["view"]'::jsonb, true, now() - interval '90 days'),
 ('e2000000-0000-0000-0000-000000000002', NULL, 'Editor', '["view","edit","create"]'::jsonb, true, now() - interval '90 days'),

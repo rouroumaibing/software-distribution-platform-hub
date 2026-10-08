@@ -12,11 +12,11 @@ basic:
 service:
   containerPort: 8080
   externPort: 8080
-  # 2026-09-28 网关拆分：hub 不再 NodePort 直连（改 ClusterIP，经 Gateway /api 路由），
-  # 故 nodePort 字段已弃用（service.yaml 不再引用）；保留注释以标记历史用途，勿重新启用。
+  # 网关拆分：hub 不经 NodePort 直连（ClusterIP，经 Gateway /api 路由），
+  # nodePort 字段弃用（service.yaml 不引用）；保留字段以标记历史用途，勿重新启用。
 
 image:
-  imageAddr: localhost:5000/software-distribution-platform-hub:v0.0.1
+  imageAddr: harbor.sdpworkflow.com/sdp/software-distribution-platform-hub:v0.0.1
   pullPolicy: Always
 
 resources:
@@ -29,7 +29,10 @@ resources:
 # ⚠️ 一旦用某密钥写过凭据，换密钥即无法解密——设定后不可换。生产用 secretKeyRef 注入。
 credentialEncryptionKey: ""
 
-# gateway 配置须与 runner chart 成对修改
+# gateway 配置须与 runner chart 成对修改。
+# token 同时是 ADR-0001 首连自注册的铸发凭据：持有它拨号且带 X-Target-Vendor/Region
+# 的 runner 可让 hub 自动创建未注册 target（GitLab-Runner 式注册）；置空（dev 全收模式）
+# 等于开放注册，生产必须设置以把门。
 gateway:
   path: /gateway/ws
   token: sdp-dev-token-2026
@@ -99,15 +102,16 @@ gatewayRoute:
 keycloak:
   # 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork）。
   # 首次启动的 master realm 管理员（= Keycloak 管理台 /keycloak/admin 的登录账号）：
-  # keycloakx 7.x 不再用 init/secrets.admin，须在首次 start 通过 KEYCLOAK_ADMIN* 环境变量引导。
+  # keycloakx 7.x 不提供 init/secrets.admin，须在首次 start 通过 KEYCLOAK_ADMIN* 环境变量引导。
   # 注意：仅"master realm 尚无 admin"时生效 —— 若已用旧口令启动过，改这里不会改掉已有口令
   #      （需先删该用户，或用 kc.sh bootstrap-admin user 重置）。
   # 与 realm 预置用户 admin（见 templates/keycloak-realm-configmap.yaml 的 sdp-realm.json）
   # 是**两个 realm 的两个账号**（master vs sdp），此处刻意用同一口令，dev 只记一套。
   # 生产改 KEYCLOAK_ADMIN_PASSWORD 为 valueFrom secretKeyRef（existingSecret）。
   image:
-    # 走本地 registry（deploy-local.sh 预推）：kind 节点直拉 quay.io 实测 6 分钟不完成。
-    repository: localhost:5000/keycloak/keycloak
+    # 走 harbor（deploy-local.sh 预推 + 节点从 harbor 拉）：kind 节点直拉 quay.io 实测 6 分钟不完成。
+    # 与三个 chart 的 imageAddr 同域名（harbor.sdpworkflow.com，标准 443）三方一致。
+    repository: harbor.sdpworkflow.com/sdp/keycloak
     tag: "26.7.4"
   # 对外前端地址（KC26 hostname v2 支持完整 URL，含 scheme/port/路径）：设了它 issuer 与所有
   # 前端 URL 钉死。⚠️ 路径必须带上 http.relativePath（实测 KC 不会自动把 context path 追加到
@@ -159,7 +163,7 @@ keycloak:
     password: sdp
   serviceAccount:
     create: false
-  # 对外入口：ingress-nginx 已废弃，路由改走 Envoy Gateway —— 本 chart 的
+  # 对外入口：路由走 Envoy Gateway（不使用 ingress-nginx）—— 本 chart 的
   # templates/keycloak-httproute.yaml（/keycloak 前缀 -> hub-keycloak-http:80）。
   # 这里把 keycloakx 子 chart 自带的 Ingress 关掉（它渲染的是 Ingress 资源，无 controller 承接）。
   ingress:
@@ -177,7 +181,7 @@ keycloak:
     mode: xforwarded
   # 相对路径刻意不用 Keycloak 默认的 /auth：console 是 SPA，其 OIDC 回调路由就是 /auth/callback
   # （console/src/router/index.ts）。若 keycloak 占住 /auth 前缀，网关会按最长前缀把
-  # /auth/callback 路由到 keycloak，登录回调直接失败。故改用专属前缀 /keycloak（console 侧零占用）——
+  # /auth/callback 路由到 keycloak，登录回调直接失败。故用专属前缀 /keycloak（console 侧零占用）——
   # 结构性隔离，不依赖路由优先级。改此处须同步 console 侧 issuer（auth.keycloakIssuerUrl）。
   http:
     relativePath: /keycloak

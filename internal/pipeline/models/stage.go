@@ -26,8 +26,8 @@ func IsValidExecutionMode(m string) bool {
 // 软删（common.Base）而不是硬删：pipeline 本身是软删的（run 历史必须比定义活得
 // 久，见 common/base.go），若结构是硬删，恢复一条流水线只会得到空壳 —— 一个既非
 // 纯软删、也非纯硬删的"半状态"（DELETE-CONTRACT §6.6-3 决策 3）。
-// DDL 上的 `on delete cascade` 因两侧都改为软删而永不触发，因此删 stage 时由
-// StageService 显式软删其下任务模板（见 service/stage.go 的 TemplateCascade）。
+// 两侧均为软删（common.Base），DDL 上的 `on delete cascade` 永不触发，删 stage
+// 时由 StageService 显式软删其下任务模板（见 service/stage.go 的 TemplateCascade）。
 type PipelineStage struct {
 	common.Base
 	// 唯一性只作用于未软删的行：否则删掉一个 stage 后，同 pipeline 下再建同

@@ -306,8 +306,8 @@ func TestTest_PersistsVerifiedStatusOnAgentWithFreshTarget(t *testing.T) {
 		t.Errorf("persisted lastTestResult = %q, want the serialized report", store.updated[0].LastTestResult)
 	}
 	// The archived snapshot must carry the verdict too, not just the item list:
-	// report.Status used to be left empty, so both the API response and
-	// last_test_result rendered as a blank status in the console.
+	// report.Status is serialized into last_test_result and returned by the
+	// API, so the console can render the verdict.
 	if !strings.Contains(store.updated[0].LastTestResult, `"status":"verified"`) {
 		t.Errorf("persisted lastTestResult = %q, want it to record the verdict", store.updated[0].LastTestResult)
 	}

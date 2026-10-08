@@ -5,7 +5,7 @@
 
 > **D3 之后没有 `users` 表了**（`shared/ACCOUNT-PERMISSION-MODEL.md` §2.2）：hub 对身份
 > 无状态，主体一律取 token 的 `sub`。种子里的绑定因此直接写 `sub` 字符串，
-> 不再插入本地用户行（见 06_permissions.sql 的说明）。
+> 不插入本地用户行（见 06_permissions.sql 的说明）。
 
 ## 与 old service_default_data.sql 的差异
 
@@ -33,6 +33,7 @@
 | 07_component_configs.sql | component_configs | 组件详情-配置 |
 | 08_runs_artifacts.sql | pipeline_runs, task_runs, artifacts | 运行中心、组件详情-运行记录/发布/制品库/日志 |
 | 09_rbac_multiorg.sql | platform_roles, platform_role_bindings, component_roles | 平台权限、组件角色选择器（§7 两层 RBAC） |
+| 10_credentials.sql | credentials | 接入管理、组件详情-环境-凭据区 |
 
 ## 导入
 
@@ -66,14 +67,17 @@ hub 的读时自举默认组织（Default/default）与本种子数据互不影�
 > `platform_roles`/`component_roles` 的前缀，与本表里的 `f1`=component_configs、
 > `f2`=pipeline_runs **撞名**。因为主键按表唯一、种子之间也没有 FK，功能上无害，
 > 但读种子时容易串台。新文件请从 `f5` 起用，或另开 `g*` 段。
+>
+> 同类：`10_credentials.sql`（后加）复用 `b1` 作为 credentials 的前缀，与本表
+> `b1`=services **撞名** —— 同样功能上无害（主键按表唯一、种子之间无 FK），登记在此防误读。
 
 ## 清空重来
 
-种子数据无外键约束（GORM 未建 FK），按 08→00 倒序 TRUNCATE 即可：
+种子数据无外键约束（GORM 未建 FK），按 10→00 倒序 TRUNCATE 即可：
 
 ```bash
 kubectl -n sdp-workflow exec -it deploy/postgres -- psql -U sdp -d sdp \
-  -c "TRUNCATE artifacts, task_runs, pipeline_runs, component_configs,
+  -c "TRUNCATE credentials, artifacts, task_runs, pipeline_runs, component_configs,
       component_role_bindings, roles, pipeline_versions,
       pipeline_task_templates, pipeline_stages, pipelines,
       environments, targets, components, services,

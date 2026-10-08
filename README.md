@@ -31,6 +31,7 @@
 | `credentials` | 凭据托管：AES-GCM 信封加密落库（`codec`，API 只回 `xxxSet`），`parse-kubeconfig` 结构化解析（拒绝 exec 插件） |
 | `keycloak` / `permission` / `middleware` | 身份域（org 组运行时预置 `EnsureGroup("/org:<slug>")`）、两层 RBAC 引擎、鉴权/审计中间件 |
 | `org` / `search` / `packageversion` / `gateway` | 组织（触发 KC 组预置）、⌘K 搜索后端、版本矩阵（`GET /package-versions`，读 `PACKAGE_VERSION_*`）、runner 出站回连 WS 网关 |
+| `notification` | 通知中心：把待审批运行聚合成铃铛通知流（`GET /notifications`，接线在 `cmd/hub/main.go`） |
 | `db` / `config` / `common` | AutoMigrate（**只加不删**）、环境变量装配、响应壳/CRUD 泛型注册 |
 
 - **schema SSOT = AutoMigrate + `migrations/`**：列新增交给 AutoMigrate；删列/改名/列宽变更写 `migrations/*.sql`（幂等，现库需手工 `kubectl exec postgres -- psql` 执行）。
@@ -40,18 +41,19 @@
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `DB_DSN` | —— | Postgres 连接串 |
-| `HUB_ADDR` | —— | HTTP 监听地址 |
+| `DB_DSN` | `postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable` | Postgres 连接串 |
+| `HUB_ADDR` | `:8080` | HTTP 监听地址 |
 | `KEYCLOAK_ISSUER` | **空** | 空 ⇒ `AuthDisabled()`（dev 姿态：auth 中间件与 org 组预置同时关闭）。须与 Keycloak 实际通告的 issuer **一字不差**（KC 26 通告短名 svc、剥默认端口） |
 | `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_SECRET` | `sdp-console` / `sdp-backend` / 空 | JWT `azp` 校验 / org 组预置的 Admin API 凭据 |
-| `CREDENTIAL_ENCRYPTION_KEY` | **空** | 空 ⇒ 凭据明文落库（dev）；32 字节 key ⇒ AES-GCM 信封加密 |
 | `PACKAGE_VERSION_CONSOLE/HUB/RUNNER` | `dev` | 版本矩阵；集群内由 chart 的 `package-versions` ConfigMap 注入 |
+
+> `CREDENTIAL_ENCRYPTION_KEY` **不在** `internal/config` 的装配清单里：它由凭据编解码包 `internal/credentials/codec`（`codec.go`）直接读取，用于凭据 AES-GCM 信封加密；空 ⇒ 凭据明文落库（dev），32 字节 key ⇒ 加密。
 
 ## swaggo API 文档（`docs/`）
 
 `docs/{docs.go,swagger.json,swagger.yaml}` 由 `swag init` 生成；但 **`docs.go` 是编译必需输入**（`cmd/hub/main.go` 空白导入该包注册 swagger spec，`/swagger/*any` 依赖它）。按「**编译/打包必需 → 入库**」的生成物规则（与 runner 的 controller-gen 产物 `zz_generated.deepcopy.go` 一致），这三个文件：
 
-- **已入库**，`.gitignore` **不再忽略**，`make clean` **默认不删**；
+- **已入库**，`.gitignore` **不忽略**，`make clean` **默认不删**；
 - 缺失时 `go build ./cmd/hub`、`go vet ./...`、`go test ./...` 会直接失败（新克隆 / CI / release 全挂）——为此 `make build` 加了前置检查，会给出可操作的提示而不是抛 `no required module provides package .../docs`。
 
 **再生成**（改了 handler 的 swagger 注解后）：
@@ -66,7 +68,7 @@ swag init --generalInfo cmd/hub/main.go --parseInternal --output docs
 
 ## 设计文档
 
-本组件的设计文档（领域模型、控制面实现 Story、Backlog、下发队列 ADR、用户故事等）已统一收敛到独立的 [`software-distribution-platform-docs`](https://github.com/rouroumaibing/software-distribution-platform-docs) 仓库（单一真源），本仓库不再存放设计文档正文。
+本组件的设计文档（领域模型、控制面实现 Story、Backlog、下发队列 ADR、用户故事等）已统一收敛到独立的 [`software-distribution-platform-docs`](https://github.com/rouroumaibing/software-distribution-platform-docs) 仓库（单一真源），设计文档正文不在本仓库存放。
 
 - 领域 / 数据模型：[`shared/DATA-MODEL.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/shared/DATA-MODEL.md)
 - 控制面实现 Story：[`hub/STORY-hub-implementation.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/hub/STORY-hub-implementation.md)

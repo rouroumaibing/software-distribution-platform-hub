@@ -29,8 +29,7 @@ type ComponentRoleBinding struct {
 	SubjectType     string     `gorm:"size:16" json:"subjectType,omitempty"`             // user|group
 	SubjectID       string     `gorm:"size:128" json:"subjectId,omitempty"`              // Keycloak sub | group name (§5.3)
 	ComponentRoleID *uuid.UUID `gorm:"type:uuid;index" json:"componentRoleId,omitempty"` // §7 role
-	// GrantedBy is the granting subject's `sub` (text since 0015 — it used to be
-	// a local users.id uuid).
+	// GrantedBy is the granting subject's `sub` (§5.3).
 	GrantedBy *string   `gorm:"size:128" json:"grantedBy,omitempty"`
 	GrantedAt time.Time `gorm:"not null;default:now()" json:"grantedAt"`
 	// ExpiresAt is the grant's TTL (ACCOUNT-PERMISSION-MODEL §7.4). NULL =

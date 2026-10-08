@@ -101,8 +101,8 @@ func (s *ArtifactService) ListByComponent(componentID uuid.UUID, p common.Pagina
 	return s.repo.FindByComponentID(componentID, p)
 }
 
-// Delete removes the DB row, then best-effort deletes the underlying object —
-// but no longer swallows the object error (backlog B-16 源头治理 /
+// Delete removes the DB row, then best-effort deletes the underlying object,
+// and does not swallow the object error (backlog B-16 源头治理 /
 // DELETE-CONTRACT §6.6-4 决策 4 第 1 步).
 //
 // 顺序与语义:
@@ -111,8 +111,8 @@ func (s *ArtifactService) ListByComponent(componentID uuid.UUID, p common.Pagina
 //     component / storage key / 原因）—— 这正是"孤儿对象"的来源，必须可观测。
 //   - 不把对象删除失败升级成 API 错误：元数据已经删了，返回失败会让调用方以为
 //     行还在并去重试，而重试只会拿到 404 —— 那是在对调用方撒谎。
-//   - 清理失败目前没有自动重试/标记列（`cleanup_state`），由对账任务兜底：那属
-//     backlog B-16 的"对账（仅报告）"项，按 §6.6-4 排期在本轮之后。
+//   - 行已删、无处保留重试状态，孤儿对象由对账任务兜底：backlog B-16 的
+//     "对账（仅报告）"项，清单交运维处理（§6.5 决策 4）。
 func (s *ArtifactService) Delete(id uuid.UUID) error {
 	a, err := s.repo.GetByID(id)
 	if err != nil {

@@ -40,10 +40,10 @@ type ComponentConfigHistory struct {
 	ComponentID   uuid.UUID  `gorm:"type:uuid;not null;index" json:"componentId"`
 	EnvironmentID *uuid.UUID `gorm:"type:uuid" json:"environmentId,omitempty"`
 	// EnvironmentKey is a denormalized snapshot of environments.key taken at
-	// write time. The FK on environment_id was deliberately dropped
-	// (DELETE-CONTRACT §6.6-2 / B-14) so that deleting an environment no
-	// longer 500s on existing history rows, and so a deleted environment's
-	// audit rows stay readable — "alpha（已删除）" instead of a dangling uuid.
+	// write time. environment_id carries no FK (DELETE-CONTRACT §6.6-2 /
+	// B-14): deleting an environment must not 500 on existing history rows,
+	// and a deleted environment's audit rows stay readable —
+	// "alpha（已删除）" instead of a dangling uuid.
 	EnvironmentKey string `gorm:"size:64" json:"environmentKey,omitempty"`
 	Key            string `gorm:"size:128;not null" json:"key"`
 	Action         string `gorm:"size:16;not null" json:"action"`
