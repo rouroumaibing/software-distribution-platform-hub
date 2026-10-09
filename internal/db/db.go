@@ -12,6 +12,7 @@ import (
 	credentialmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/models"
 	environmentmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environment/models"
 	environmentgroupmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/models"
+	notificationmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/notification/models"
 	orgmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/models"
 	permmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
@@ -94,6 +95,8 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&pipelinemodels.Pipeline{}, &pipelinemodels.PipelineStage{}, &pipelinemodels.PipelineTaskTemplate{}, &pipelinemodels.PipelineVersion{},
 		&artifactmodels.Artifact{},
 		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{}, &runmodels.PipelineApproval{},
+		// 服务端通知已读游标（RUNNER-REFLUX-SPEC §6 / STATUS #20 hub 半边）。
+		&notificationmodels.NotificationRead{},
 		// 无 `users` 表（D3）—— hub 对身份无状态（ACCOUNT-PERMISSION-MODEL
 		// §2.2），主体一律取 token `sub`。Role 仍保留（V1 `roles` 表本身不在
 		// D3 的确认范围内，见 plans/UNIMPLEMENTED-MODULES-PLAN.md §14）。

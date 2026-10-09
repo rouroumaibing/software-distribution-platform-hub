@@ -4,7 +4,8 @@ package main
 // §9.9 接入编排) and the gateway: it assembles the wire payload for a queued
 // op and pushes it down the target's live Runner connection.
 //
-// Assembly rules (UNIMPLEMENTED-MODULES-PLAN §16.5 steelman):
+// Assembly rules (UNIMPLEMENTED-MODULES-PLAN §16.5 steelman, amended 2026-10-08
+// by INSTALL-UPGRADE-EXECUTOR-DESIGN):
 //   - Namespace comes from the op's environment, so the Runner's op Job lands
 //     where the operator scoped the environment.
 //   - Kubeconfig is attached only for kubeconfig-access environments: the
@@ -12,10 +13,11 @@ package main
 //     cluster access the hub deliberately does not have (hub 无 client-go)。
 //     The credential is decrypted here (codec) and shipped over the
 //     authenticated gateway WS — the documented trust boundary.
-//   - install / upgrade are NOT dispatched: their executors depend on the
-//     §9.9 bootstrap flow (enroll-token credential handover to a target that
-//     has no Runner yet), a separate feature. They stay queued by design —
-//     console's「已受理待执行」semantics unchanged (docs/hub/API-REFERENCE.md).
+//   - exec and upgrade are dispatched: upgrade runs the self-upgrade Job on
+//     the live runner and reconciles to terminal state via the reconnected
+//     runner's agent_info frame. install stays queued — it completes by
+//     enroll 对账 (first connection of the target's runner with a matching
+//     enroll token), not by dispatch.
 
 import (
 	"context"
@@ -42,8 +44,19 @@ type agentOpDispatcher struct {
 
 // Dispatch satisfies targetsvc.OpDispatcher.
 func (d *agentOpDispatcher) Dispatch(op *targetmodels.AgentOp) error {
-	if op.OpType != targetmodels.AgentOpExec {
-		// Bootstrap-dependent ops stay queued (§16.5 裁定); not an error.
+	switch op.OpType {
+	case targetmodels.AgentOpExec:
+		// exec: dispatch immediately (§16.5, unchanged).
+	case targetmodels.AgentOpUpgrade:
+		// upgrade (INSTALL-UPGRADE-EXECUTOR-DESIGN): dispatch to the live
+		// runner — it creates the self-upgrade Job and reports running; the
+		// WS drop is expected and the hub reconciles the terminal state on
+		// the upgraded runner's agent_info frame (main.go SetAgentInfoHandler).
+		// Target must be online; offline keeps the op queued (retry on drain
+		// is moot because a reconnect re-triggers tryDispatch only for exec —
+		// the operator re-issues or the drain hook picks it up).
+	default:
+		// install and anything else: stay queued (§9.9 bootstrap flow).
 		return nil
 	}
 	payload, err := d.buildPayload(op)

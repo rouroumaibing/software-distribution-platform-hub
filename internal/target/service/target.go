@@ -83,6 +83,24 @@ func (s *TargetService) Heartbeat(id uuid.UUID, online bool) error {
 	return s.repo.Update(tg)
 }
 
+// RecordAgentInfo persists the runner's self-reported identity
+// (RUNNER-REFLUX-SPEC §5): agent_version from the WS handshake frame plus
+// last-seen. Not a user-facing CRUD op — gateway-only, like Heartbeat.
+// A version change on an upgrade is how the hub reconciles the upgrade
+// agent_ops row to its succeeded terminal state.
+func (s *TargetService) RecordAgentInfo(id uuid.UUID, agentVersion string) error {
+	tg, err := s.repo.GetByID(id)
+	if err != nil {
+		return err
+	}
+	if agentVersion != "" {
+		tg.AgentVersion = agentVersion
+	}
+	now := time.Now()
+	tg.LastHeartbeatAt = &now
+	return s.repo.Update(tg)
+}
+
 // GenerateEnrollToken issues a one-time bootstrap token for a target (§9.9):
 // the console registers a target, then exchanges this token to enroll a Runner
 // Agent. The plaintext token is returned exactly once; only its hash-equivalent

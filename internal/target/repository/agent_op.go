@@ -90,3 +90,29 @@ func (r *AgentOpRepository) ListQueuedByTarget(targetID uuid.UUID) ([]models.Age
 	}
 	return items, nil
 }
+
+// ListByTargetStatusType returns ops of one target filtered by lifecycle
+// status and op type — the upgrade-reconciliation lookup
+// (INSTALL-UPGRADE-EXECUTOR-DESIGN §4.2: on agent_info, find running upgrade
+// ops whose Detail matches the reported version).
+func (r *AgentOpRepository) ListByTargetStatusType(targetID uuid.UUID, status, opType string) ([]models.AgentOp, error) {
+	var items []models.AgentOp
+	if err := r.db.Where("target_id = ? AND status = ? AND op_type = ?",
+		targetID, status, opType).
+		Order("created_at ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// ListTargetsWithRunningUpgrades returns the distinct target IDs that have a
+// running upgrade op — the sweep input for the upgrade timeout reconciler.
+func (r *AgentOpRepository) ListTargetsWithRunningUpgrades() ([]uuid.UUID, error) {
+	var ids []uuid.UUID
+	if err := r.db.Model(&models.AgentOp{}).
+		Where("status = ? AND op_type = ?", models.AgentOpRunning, models.AgentOpUpgrade).
+		Distinct().Pluck("target_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}

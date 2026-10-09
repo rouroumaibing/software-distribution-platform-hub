@@ -1,8 +1,15 @@
 package repository
 
 import (
+	"encoding/json"
+	"errors"
+	"time"
+
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
+
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
@@ -57,4 +64,72 @@ func (r *RolloutRunRepository) Update(m *models.RolloutRun) error {
 
 func (r *RolloutRunRepository) Delete(id uuid.UUID) error {
 	return r.DB.Delete(&models.RolloutRun{}, "id = ?", id).Error
+}
+
+// UpsertSnapshot persists a runner-reported rollout reflux snapshot
+// (RUNNER-REFLUX-SPEC §3): last-write-wins on the task's rollout_runs row,
+// appending (at, phase, weight) to step_history so the hub accumulates the
+// progression timeline while the runner stays stateless. Best-effort callers
+// must not fail status writes when this errors — the error is returned for
+// logging/metrics only.
+func (r *RolloutRunRepository) UpsertSnapshot(taskRunID uuid.UUID, ts runnerapi.RolloutStatusSummary, at time.Time) error {
+	return r.DB.Transaction(func(tx *gorm.DB) error {
+		var row models.RolloutRun
+		err := tx.First(&row, "task_run_id = ?", taskRunID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			row = models.RolloutRun{
+				TaskRunID:        taskRunID,
+				WorkloadRef:      ts.WorkloadRef,
+				Phase:            ts.Phase,
+				CurrentStepIndex: ts.CurrentStepIndex,
+				CurrentWeight:    ts.CurrentWeight,
+				StartTime:        &at,
+			}
+			row.StepHistory = datatypes.JSON([]byte("[]"))
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else {
+			row.Phase = ts.Phase
+			row.CurrentStepIndex = ts.CurrentStepIndex
+			row.CurrentWeight = ts.CurrentWeight
+			if ts.WorkloadRef != "" {
+				row.WorkloadRef = ts.WorkloadRef
+			}
+			if isTerminalRolloutPhase(ts.Phase) && row.CompletionTime == nil {
+				row.CompletionTime = &at
+			}
+			if err := tx.Save(&row).Error; err != nil {
+				return err
+			}
+		}
+		// Append snapshot to step_history (jsonb array, only-forward inserts).
+		var hist []map[string]any
+		if len(row.StepHistory) > 0 {
+			_ = json.Unmarshal(row.StepHistory, &hist)
+		}
+		hist = append(hist, map[string]any{
+			"at":     at.Format(time.RFC3339),
+			"phase":  string(ts.Phase),
+			"weight": ts.CurrentWeight,
+		})
+		blob, err := json.Marshal(hist)
+		if err != nil {
+			return err
+		}
+		return tx.Model(&models.RolloutRun{}).Where("id = ?", row.ID).
+			Update("step_history", datatypes.JSON(blob)).Error
+	})
+}
+
+// isTerminalRolloutPhase reports whether a reflux phase ends the progression
+// (Healthy / Degraded / RollingBack settle; Progressing / Paused do not).
+func isTerminalRolloutPhase(p runnerapi.RolloutPhase) bool {
+	switch p {
+	case runnerapi.RolloutHealthy, runnerapi.RolloutDegraded, runnerapi.RolloutRollingBack:
+		return true
+	}
+	return false
 }

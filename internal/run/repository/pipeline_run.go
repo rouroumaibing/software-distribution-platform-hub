@@ -43,7 +43,7 @@ func (r *PipelineRunRepository) PipelineIDOf(ctx context.Context, runID uuid.UUI
 // 「最近运行」一列需要"该组件下所有流水线的运行，按时间倒序取头几条"，一次查询
 // 就能在客户端按 pipeline_id 分组取最新，避免对每条流水线各发一次请求（N+1）。
 // JOIN 而非 EXISTS：两张表都是软删，JOIN 与既有聚合查询保持同一写法。
-func (r *PipelineRunRepository) FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time) ([]models.PipelineRun, int64, error) {
+func (r *PipelineRunRepository) FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time, triggeredBy string) ([]models.PipelineRun, int64, error) {
 	return r.List(p, func(db *gorm.DB) *gorm.DB {
 		if componentID != uuid.Nil {
 			db = db.Joins("JOIN pipelines p ON p.id = pipeline_runs.pipeline_id").
@@ -54,6 +54,9 @@ func (r *PipelineRunRepository) FindAll(p common.Pagination, phase string, compo
 		}
 		if createdAfter != nil {
 			db = db.Where("pipeline_runs.created_at >= ?", *createdAfter)
+		}
+		if triggeredBy != "" {
+			db = db.Where("pipeline_runs.triggered_by = ?", triggeredBy)
 		}
 		return db.Order("pipeline_runs.created_at desc")
 	})

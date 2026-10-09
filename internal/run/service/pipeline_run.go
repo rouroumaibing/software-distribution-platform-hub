@@ -71,9 +71,10 @@ type PipelineRunStore interface {
 	Update(*models.PipelineRun) error
 	GetByCRNameTarget(crName string, targetID uuid.UUID) (*models.PipelineRun, error)
 	FindByPipelineID(pipelineID uuid.UUID, p common.Pagination) ([]models.PipelineRun, int64, error)
-	// FindAll 的 phase / componentID / createdAfter 都是可选过滤（零值 = 不过滤）。
+	// FindAll 的 phase / componentID / createdAfter / triggeredBy 都是可选过滤（零值 = 不过滤）。
 	// createdAfter 支持 N-1 运行时间窗过滤（STATUS §2 #15）。
-	FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time) ([]models.PipelineRun, int64, error)
+	// triggeredBy 支持运行中心触发人筛选（console P2，2026-10-08）。
+	FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time, triggeredBy string) ([]models.PipelineRun, int64, error)
 }
 
 // TaskRunStore is the persistence surface over task_runs.
@@ -166,7 +167,23 @@ type PipelineRunService struct {
 	// sweepInterval controls how often SweepPending retries failed dispatch
 	// jobs. Overridable in tests; defaults to 15s.
 	sweepInterval time.Duration
+
+	// rolloutStore persists runner-reported canary reflux snapshots
+	// (RUNNER-REFLUX-SPEC §3, STATUS #8). Setter-wired like the other
+	// optional collaborators; nil means "reflux storage disabled" and old
+	// runners' summaries (no Rollout field) simply skip it.
+	rolloutStore RolloutSnapshotStore
 }
+
+// RolloutSnapshotStore upserts a runner-reported RolloutStatusSummary onto
+// the task's rollout_runs row (last-write-wins + step_history append).
+type RolloutSnapshotStore interface {
+	UpsertSnapshot(taskRunID uuid.UUID, ts runnerapi.RolloutStatusSummary, at time.Time) error
+}
+
+// SetRolloutStore wires the reflux snapshot store (main wires the concrete
+// repository). Safe to leave unset in tests.
+func (s *PipelineRunService) SetRolloutStore(st RolloutSnapshotStore) { s.rolloutStore = st }
 
 func NewPipelineRunService(
 	repo PipelineRunStore,
@@ -403,6 +420,16 @@ func (s *PipelineRunService) ApplyStatus(ctx context.Context, targetID uuid.UUID
 		// G-2：任务 Succeeded 且模板声明了 Produces → 登记制品行，前端制品
 		// Tab 才有数据。Best-effort，失败不影响状态回写。
 		s.registerProducedArtifacts(run, ts)
+		// 灰度回流（RUNNER-REFLUX-SPEC §3 / STATUS #8）：Deploy 型任务的
+		// Rollout 快照 → rollout_runs upsert + step_history 追加。Best-effort：
+		// 快照是增强数据，落库失败只记日志，绝不影响相位推进。
+		if ts.Rollout != nil && s.rolloutStore != nil {
+			if tr, terr := s.taskRepo.GetByRunAndTaskName(run.ID, ts.Name); terr == nil && tr != nil {
+				if err := s.rolloutStore.UpsertSnapshot(tr.ID, *ts.Rollout, time.Now()); err != nil {
+					applog.Warnf("run: rollout snapshot upsert failed for task %q run %s: %v", ts.Name, run.ID, err)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -533,8 +560,8 @@ func (s *PipelineRunService) ListByPipeline(pipelineID uuid.UUID, p common.Pagin
 // componentID are optional filters — the zero value means "no filter on this
 // dimension". componentID is what lets the console's pipeline list fill its
 // 「最近运行」column with a single request instead of one per pipeline.
-func (s *PipelineRunService) ListAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time) ([]models.PipelineRun, int64, error) {
-	return s.repo.FindAll(p, phase, componentID, createdAfter)
+func (s *PipelineRunService) ListAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time, triggeredBy string) ([]models.PipelineRun, int64, error) {
+	return s.repo.FindAll(p, phase, componentID, createdAfter, triggeredBy)
 }
 
 func (s *PipelineRunService) ListTasks(runID uuid.UUID) ([]models.TaskRun, error) {

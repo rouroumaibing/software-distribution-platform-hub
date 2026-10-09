@@ -75,6 +75,30 @@ func (f *fakeAgentOpRepo) ListQueuedByTarget(uuid.UUID) ([]models.AgentOp, error
 	return out, nil
 }
 
+// upgrade/install 对账（INSTALL-UPGRADE-EXECUTOR-DESIGN §4.2）的 fake 查询：
+// 测试直接塞 byStatusType，按 (target, status, type) 过滤。
+func (f *fakeAgentOpRepo) ListByTargetStatusType(targetID uuid.UUID, status, opType string) ([]models.AgentOp, error) {
+	out := make([]models.AgentOp, 0)
+	for _, op := range f.ops {
+		if op.TargetID == targetID && op.Status == status && op.OpType == opType {
+			out = append(out, *op)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAgentOpRepo) ListTargetsWithRunningUpgrades() ([]uuid.UUID, error) {
+	seen := map[uuid.UUID]bool{}
+	var ids []uuid.UUID
+	for _, op := range f.ops {
+		if op.Status == models.AgentOpRunning && op.OpType == models.AgentOpUpgrade && !seen[op.TargetID] {
+			seen[op.TargetID] = true
+			ids = append(ids, op.TargetID)
+		}
+	}
+	return ids, nil
+}
+
 type fakeDispatcher struct {
 	dispatched []*models.AgentOp
 	err        error

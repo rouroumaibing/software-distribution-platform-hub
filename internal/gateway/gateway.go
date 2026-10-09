@@ -20,6 +20,7 @@ import (
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/metrics"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/target/service"
 )
 
@@ -47,6 +48,12 @@ type AgentOpLogHandler func(ctx context.Context, targetID uuid.UUID, payload *ru
 // offline (e.g. pending dispatch jobs).
 type ConnectHandler func(ctx context.Context, targetID uuid.UUID)
 
+// AgentInfoHandler is invoked for the one-shot agent_info identity frame the
+// Runner sends right after every (re)connect (RUNNER-REFLUX-SPEC §5).
+// targetID is the connection-resolved UUID — authoritative; a payload
+// TargetName mismatch is audited and the frame ignored (anti-spoofing).
+type AgentInfoHandler func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentInfoPayload)
+
 // HubServer accepts Runner WebSocket connections and multiplexes dispatch /
 // inbound messages across them, keyed by target UUID.
 type HubServer struct {
@@ -63,6 +70,11 @@ type HubServer struct {
 	// agent op lifecycle reports (§9.5 / §9.9, UNIMPLEMENTED-MODULES-PLAN §16.5)
 	opStatusH AgentOpStatusHandler
 	opLogH    AgentOpLogHandler
+	// identity frame (RUNNER-REFLUX-SPEC §5)
+	agentInfoH AgentInfoHandler
+	// targetNames tracks each connection's resolved target name so the
+	// per-target connection gauge can be cleared on disconnect.
+	targetNames map[uuid.UUID]string
 }
 
 // New constructs a HubServer. gatewayToken, when non-empty, must match the
@@ -77,7 +89,8 @@ func New(targetSvc *service.TargetService, gatewayToken string) *HubServer {
 			// with mTLS / network policy in production.
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
-		conns: make(map[uuid.UUID]*websocket.Conn),
+		conns:       make(map[uuid.UUID]*websocket.Conn),
+		targetNames: make(map[uuid.UUID]string),
 	}
 }
 
@@ -95,6 +108,10 @@ func (h *HubServer) SetAgentOpStatusHandler(fn AgentOpStatusHandler) { h.opStatu
 
 // SetAgentOpLogHandler registers the callback for Runner op log chunks.
 func (h *HubServer) SetAgentOpLogHandler(fn AgentOpLogHandler) { h.opLogH = fn }
+
+// SetAgentInfoHandler registers the callback for the runner identity frame
+// (RUNNER-REFLUX-SPEC §5: agent_version → targets table + upgrade 对账).
+func (h *HubServer) SetAgentInfoHandler(fn AgentInfoHandler) { h.agentInfoH = fn }
 
 // ServeWS is the gin handler mounted at the gateway path. It authenticates
 // the Runner, registers the connection, marks the target online, then reads
@@ -139,10 +156,14 @@ func (h *HubServer) ServeWS(c *gin.Context) {
 	}
 
 	h.register(tg.ID, ws)
+	h.setGauge(targetName, tg.ID, true)
 	if h.connectH != nil {
 		h.connectH(c.Request.Context(), tg.ID)
 	}
-	defer h.unregister(tg.ID, ws)
+	defer func() {
+		h.unregister(tg.ID, ws)
+		h.setGauge(targetName, tg.ID, false)
+	}()
 
 	if err := h.targetSvc.Heartbeat(tg.ID, true); err != nil {
 		applog.Infof("gateway: mark online failed for target %s: %v", targetName, err)
@@ -157,6 +178,19 @@ func (h *HubServer) register(targetID uuid.UUID, ws *websocket.Conn) {
 	h.mu.Lock()
 	h.conns[targetID] = ws
 	h.mu.Unlock()
+}
+
+// setGauge records the connection's target name and publishes the per-target
+// online gauge (ALERTING-RULES-DESIGN §2.1: RunnerOffline 的数据源)。
+func (h *HubServer) setGauge(targetName string, targetID uuid.UUID, online bool) {
+	h.mu.Lock()
+	if online {
+		h.targetNames[targetID] = targetName
+	} else {
+		delete(h.targetNames, targetID)
+	}
+	h.mu.Unlock()
+	metrics.SetGatewayConnectedTargets(targetName, online)
 }
 
 // unregister 移除连接。同一目标的新旧连接在滚动重启时会短暂并存：
@@ -338,6 +372,15 @@ func (h *HubServer) readLoop(ctx context.Context, targetID uuid.UUID, ws *websoc
 			}
 			if h.opLogH != nil {
 				h.opLogH(ctx, targetID, &p)
+			}
+		case runnerapi.MessageAgentInfo:
+			var p runnerapi.AgentInfoPayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				applog.Infof("gateway: agent info decode failed: %v", err)
+				continue
+			}
+			if h.agentInfoH != nil {
+				h.agentInfoH(ctx, targetID, &p)
 			}
 		default:
 			applog.Infof("gateway: target %s unhandled message type %q", targetID, msg.Type)

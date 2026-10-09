@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	datatypes "gorm.io/datatypes"
 
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 )
@@ -18,6 +19,13 @@ type RolloutRun struct {
 	Phase            runnerapi.RolloutPhase `gorm:"size:32;not null;default:Progressing" json:"phase"`
 	CurrentStepIndex int                    `gorm:"not null;default:0" json:"currentStepIndex"`
 	CurrentWeight    int                    `gorm:"not null;default:0" json:"currentWeight"`
+
+	// StepHistory accumulates the reflux snapshots server-side
+	// (RUNNER-REFLUX-SPEC §9 裁定): the runner stays stateless and reports
+	// only the current step; the hub appends each snapshot (ts, phase,
+	// weight) here so the console can draw the full progression timeline.
+	// jsonb array of {"at": RFC3339, "phase": string, "weight": int}.
+	StepHistory datatypes.JSON `gorm:"type:jsonb" json:"stepHistory,omitempty"`
 
 	StartTime      *time.Time `json:"startTime,omitempty"`
 	CompletionTime *time.Time `json:"completionTime,omitempty"`

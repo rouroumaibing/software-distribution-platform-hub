@@ -146,7 +146,7 @@ func (h *PipelineRunHandler) ListAll(c *gin.Context) {
 		}
 		createdAfter = &t
 	}
-	items, total, err := h.svc.ListAll(p, c.Query("phase"), componentID, createdAfter)
+	items, total, err := h.svc.ListAll(p, c.Query("phase"), componentID, createdAfter, c.Query("triggeredBy"))
 	if err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)
 		return

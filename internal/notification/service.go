@@ -40,14 +40,28 @@ type RunLinkSource interface {
 type Service struct {
 	approvals ApprovalSource
 	runs      RunLinkSource
+	reads     ReadCursor
 }
 
 func New(approvals ApprovalSource, runs RunLinkSource) *Service {
 	return &Service{approvals: approvals, runs: runs}
 }
 
+// ReadCursor 是服务端已读游标的窄接口（RUNNER-REFLUX-SPEC §6）；
+// *ReadStore（GORM 实现）满足它，测试用 fake 注入。
+type ReadCursor interface {
+	LastReadAt(subject string) (time.Time, error)
+	AdvanceTo(subject string, at time.Time) error
+}
+
+// SetReadStore 挂上服务端已读游标存储。nil = 未迁移 notification_reads 表
+// （旧库），List 退化为「全部未读」的旧行为，前端 localStorage 游标继续兜底。
+func (s *Service) SetReadStore(r ReadCursor) { s.reads = r }
+
 // List 返回当前未读/待办通知。limit 越界时夹到 [1,100] 并默认 50。
-func (s *Service) List(ctx context.Context, limit int) ([]Notification, error) {
+// subject 非空且已读游标可用时，unreadCount 按服务端时钟计算（CreatedAt >
+// lastReadAt 的行动项数），消除前端 skew；items 仍返回全量供下拉展示。
+func (s *Service) List(ctx context.Context, subject string, limit int) ([]Notification, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -56,7 +70,15 @@ func (s *Service) List(ctx context.Context, limit int) ([]Notification, error) {
 	}
 	pending, err := s.approvals.ListPending(limit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	unread := 0
+	var lastRead time.Time
+	counting := s.reads != nil && subject != ""
+	if counting {
+		if lr, err := s.reads.LastReadAt(subject); err == nil {
+			lastRead = lr
+		}
 	}
 	out := make([]Notification, 0, len(pending))
 	for _, a := range pending {
@@ -73,6 +95,15 @@ func (s *Service) List(ctx context.Context, limit int) ([]Notification, error) {
 		if c := strings.TrimSpace(a.ComponentID.String()); c != uuid.Nil.String() {
 			body += "（组件 " + c[:8] + "）"
 		}
+		// 未读判定：有服务端游标 → CreatedAt > lastReadAt；无游标（旧库）→
+		// 全部未读（保持旧行为，console localStorage 兜底语义不变）。
+		if counting {
+			if a.CreatedAt.After(lastRead) {
+				unread++
+			}
+		} else {
+			unread++
+		}
 		out = append(out, Notification{
 			ID:        a.ID.String(),
 			Type:      "approval",
@@ -82,5 +113,16 @@ func (s *Service) List(ctx context.Context, limit int) ([]Notification, error) {
 			CreatedAt: a.CreatedAt,
 		})
 	}
-	return out, nil
+	return out, unread, nil
+}
+
+// MarkRead 推进服务端已读游标（只前进不回退）。subject 取自 token，不可伪造。
+func (s *Service) MarkRead(subject string, at time.Time) error {
+	if s.reads == nil {
+		return errReadStoreUnavailable
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return s.reads.AdvanceTo(subject, at)
 }

@@ -335,6 +335,30 @@ func main() {
 	// (run 触发路径未补齐项 #1)。pipelineSvc 满足 run 服务的 PipelineDefStore
 	// 窄接口（GetByID）。
 	runSvc := runsvc.NewPipelineRunService(pipelineRunRepo, taskRunRepo, pipelineSvc, stageRepo, taskTemplateRepo, targetSvc, gw, dispatchJobRepo, taskRunLogRepo, approvalRepo, componentMeta)
+	// 灰度回流快照存储（RUNNER-REFLUX-SPEC §3 / STATUS #8）：ApplyStatus 收到
+	// Deploy 型任务的 Rollout 摘要 → rollout_runs upsert + step_history 追加。
+	runSvc.SetRolloutStore(rolloutRunRepo)
+	// 身份帧（RUNNER-REFLUX-SPEC §5 / STATUS #2）：写 targets.agent_version；
+	// 若该目标存在 running 的 upgrade op 且上报版本与目标一致 → 对账到 succeeded
+	// （INSTALL-UPGRADE-EXECUTOR-DESIGN §2.2，WS 中断是升级的预期行为，对账在 hub）。
+	gw.SetAgentInfoHandler(func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentInfoPayload) {
+		if payload.TargetName != "" {
+			tg, err := targetSvc.Get(targetID)
+			if err == nil && tg.Name != payload.TargetName {
+				applog.Infof("gateway: agent info target mismatch (conn=%s payload=%s) — frame ignored", tg.Name, payload.TargetName)
+				return
+			}
+		}
+		if err := targetSvc.RecordAgentInfo(targetID, payload.AgentVersion); err != nil {
+			applog.Infof("gateway: agent info persist failed for target %s: %v", targetID, err)
+			return
+		}
+		if payload.AgentVersion != "" {
+			if err := agentOpSvc.ReconcileUpgrade(targetID, payload.AgentVersion); err != nil {
+				applog.Infof("gateway: upgrade reconcile failed for target %s (version %s): %v", targetID, payload.AgentVersion, err)
+			}
+		}
+	})
 	gw.SetStatusHandler(func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.StatusUpdatePayload) {
 		_ = runSvc.ApplyStatus(ctx, targetID, payload)
 	})
@@ -365,7 +389,28 @@ func main() {
 		if err := agentOpSvc.DrainTarget(ctx, targetID); err != nil {
 			applog.Infof("gateway: agent op drain failed for target %s: %v", targetID, err)
 		}
+		// install 对账（INSTALL-UPGRADE-EXECUTOR-DESIGN §2.2）：runner 首连 =
+		// 安装成功，该目标 queued 的 install op 推进到 succeeded。
+		if err := agentOpSvc.ReconcileInstall(targetID); err != nil {
+			applog.Infof("gateway: install reconcile failed for target %s: %v", targetID, err)
+		}
 	})
+	// upgrade 超时对账器（同设计 §4.2）：running 的 upgrade op 超过 15min 无
+	// 重连即判 failed——台账可观测，不静默悬挂。
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := agentOpSvc.SweepUpgradeTimeouts(ctx, 15*time.Minute); err != nil {
+					applog.Infof("agentop: upgrade timeout sweep: %v", err)
+				}
+			}
+		}
+	}()
 	// Background sweeper retries failed dispatch jobs on backoff. Runs until
 	// the app context is cancelled at shutdown.
 	go runSvc.SweepPending(ctx)
@@ -498,6 +543,10 @@ func main() {
 	resourceOwnershipHandler.RegisterRoutes(platformGroup)
 	roleMappingHandler.RegisterRoutes(platformGroup)
 	permRequestHandler.RegisterRoutes(platformGroup)
+	// STATUS #19：审计日志读端点。audit_log 覆盖全平台操作留痕，读它 =
+	// 读到所有主体的变更记录 —— 必须与 /platform-roles 同组，开鉴权后过
+	// RequirePlatformPermission(user:manage)；写入仍由 AuditMiddleware 独占。
+	permhandler.NewAuditLogHandler(auditRepo).RegisterRoutes(platformGroup)
 	userInfoHandler.RegisterRoutes(api)
 	searchHandler.RegisterRoutes(api)
 	// §9.10 版本矩阵（CM package-versions → env → 只读端点）。
@@ -528,9 +577,14 @@ func main() {
 		}
 	}
 	// 通知中心（STATUS §2 #7）：把待审批运行聚合成铃铛通知流。
-	notificationHandler := notification.NewHandler(notification.New(approvalRepo, pipelineRunRepo))
+	// RUNNER-REFLUX-SPEC §6（STATUS #20 hub 半边）：挂上服务端已读游标，
+	// List 响应带 unreadCount（服务端时钟），read-mark 只前进不回退。
+	notificationSvc := notification.New(approvalRepo, pipelineRunRepo)
+	notificationSvc.SetReadStore(notification.NewReadStore(gdb))
+	notificationHandler := notification.NewHandler(notificationSvc)
 	scoped := api.Group("/")
 	scoped.GET("/notifications", notificationHandler.List)
+	scoped.POST("/notifications/read-mark", notificationHandler.ReadMark)
 	scoped.POST("/pipelines/:id/runs", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.Trigger)...)
 	scoped.GET("/pipelines/:id/runs", wrap(middleware.ResourcePipeline, "id", permmodels.ActionComponentRead, pipelineRunHandler.ListByPipeline)...)
 	// 全局运行列表（运行中心）：跨 pipeline 巡视，支持 ?phase= 过滤。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -29,6 +30,9 @@ type AgentOpStore interface {
 	AppendLog(opID uuid.UUID, stream, chunk string) (*models.AgentOpLog, error)
 	ListLogs(opID uuid.UUID) ([]models.AgentOpLog, error)
 	ListQueuedByTarget(targetID uuid.UUID) ([]models.AgentOp, error)
+	// Upgrade/install reconciliation lookups (INSTALL-UPGRADE-EXECUTOR-DESIGN §4.2).
+	ListByTargetStatusType(targetID uuid.UUID, status, opType string) ([]models.AgentOp, error)
+	ListTargetsWithRunningUpgrades() ([]uuid.UUID, error)
 }
 
 // OpDispatcher pushes a queued op down the target's live gateway connection.
@@ -96,6 +100,54 @@ func (s *AgentOpService) tryDispatch(op *models.AgentOp) {
 	}
 }
 
+// ReconcileInstall closes queued install ops by enrollment evidence
+// (INSTALL-UPGRADE-EXECUTOR-DESIGN §2.2): a runner connecting for a target
+// that has a pending install op IS the installation succeeding — the
+// chicken-and-egg op (install needs the runner; the runner IS the executor)
+// resolves the moment the freshly installed runner completes its first
+// handshake. Called from the gateway connect hook.
+func (s *AgentOpService) ReconcileInstall(targetID uuid.UUID) error {
+	ops, err := s.repo.ListByTargetStatusType(targetID, models.AgentOpQueued, models.AgentOpInstall)
+	if err != nil {
+		return err
+	}
+	for _, op := range ops {
+		if _, err := s.ApplyStatus(context.Background(), op.ID, models.AgentOpSucceeded,
+			"installed via enrollment (runner first connection)"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SweepUpgradeTimeouts fails running upgrade ops whose target went silent
+// for longer than maxAge (INSTALL-UPGRADE-EXECUTOR-DESIGN §4.2): the WS drop
+// is expected during a self-upgrade, but if the upgraded runner never
+// reconnects the op must reach a visible terminal state instead of hanging
+// forever. running→failed is a legal transition (IsValidAgentOpTransition).
+func (s *AgentOpService) SweepUpgradeTimeouts(ctx context.Context, maxAge time.Duration) error {
+	targets, err := s.repo.ListTargetsWithRunningUpgrades()
+	if err != nil {
+		return err
+	}
+	for _, targetID := range targets {
+		ops, err := s.repo.ListByTargetStatusType(targetID, models.AgentOpRunning, models.AgentOpUpgrade)
+		if err != nil {
+			return err
+		}
+		for _, op := range ops {
+			if time.Since(op.UpdatedAt) <= maxAge {
+				continue
+			}
+			if _, err := s.ApplyStatus(ctx, op.ID, models.AgentOpFailed,
+				"upgrade timeout: runner did not reconnect within "+maxAge.String()); err != nil {
+				applog.Infof("agentop: upgrade timeout sweep failed for op %s: %v", op.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
 // ApplyStatus applies one Runner-reported lifecycle transition and fans the
 // resulting op state out to SSE subscribers. Illegal transitions are rejected
 // with 409 and never touch the row.
@@ -144,6 +196,31 @@ func (s *AgentOpService) Logs(opID uuid.UUID) ([]models.AgentOpLog, error) {
 		return nil, err
 	}
 	return s.repo.ListLogs(opID)
+}
+
+// ReconcileUpgrade closes a dispatched upgrade op by version evidence
+// (INSTALL-UPGRADE-EXECUTOR-DESIGN §2.2): the WS connection drops while the
+// upgrade Job replaces the runner pod — an expected, not failed, state — so
+// the hub settles the ledger row on the freshly reconnected runner's
+// self-reported agent_version (RUNNER-REFLUX-SPEC §5 frame). Any running
+// upgrade op on this target whose Detail matches the reported version
+// reaches its succeeded terminal state; mismatches stay running for the
+// timeout reconciler (§4.2) to judge.
+func (s *AgentOpService) ReconcileUpgrade(targetID uuid.UUID, reportedVersion string) error {
+	ops, err := s.repo.ListByTargetStatusType(targetID, models.AgentOpRunning, models.AgentOpUpgrade)
+	if err != nil {
+		return err
+	}
+	for _, op := range ops {
+		if op.Detail != reportedVersion {
+			continue
+		}
+		if _, err := s.ApplyStatus(context.Background(), op.ID, models.AgentOpSucceeded,
+			"upgraded to "+reportedVersion+" (reconciled via agent_info)"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DrainTarget re-dispatches the ops enqueued while the target's Runner was

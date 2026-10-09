@@ -61,6 +61,10 @@ var (
 	reqDurationSum   atomic.Uint64 // nanoseconds
 	reqDurationCount atomic.Uint64
 	inFlight         atomic.Int64
+
+	// gatewayTargets counts live runner WS connections per target name —
+	// the data source for the RunnerOffline alert (ALERTING-RULES-DESIGN §2).
+	gatewayTargets = map[string]*atomic.Int64{}
 )
 
 func getCounter(label string) *counter {
@@ -101,6 +105,24 @@ func RecordRequest(method, statusClass string, duration time.Duration) {
 // IncInFlight / DecInFlight track concurrent requests as a gauge.
 func IncInFlight() { inFlight.Add(1) }
 func DecInFlight() { inFlight.Add(-1) }
+
+// SetGatewayConnectedTargets sets the per-target live-connection gauge
+// (1 = runner online, 0 = offline). ALERTING-RULES-DESIGN §2.1: the
+// RunnerOffline rule fires on `sdp_hub_gateway_connected_targets == 0`.
+func SetGatewayConnectedTargets(target string, online bool) {
+	mu.Lock()
+	g, ok := gatewayTargets[target]
+	if !ok {
+		g = &atomic.Int64{}
+		gatewayTargets[target] = g
+	}
+	mu.Unlock()
+	if online {
+		g.Store(1)
+	} else {
+		g.Store(0)
+	}
+}
 
 // GinMiddleware records per-request metrics for the Hub's Gin engine.
 func GinMiddleware() gin.HandlerFunc {
@@ -155,6 +177,20 @@ func Render() string {
 	b.WriteString("# HELP sdp_hub_uptime_seconds Process uptime in seconds.\n")
 	b.WriteString("# TYPE sdp_hub_uptime_seconds gauge\n")
 	b.WriteString("sdp_hub_uptime_seconds " + strconv.FormatInt(int64(time.Since(startTime).Seconds()), 10) + "\n")
+
+	b.WriteString("# HELP sdp_hub_gateway_connected_targets Live runner connections by target (1=online, 0=offline).\n")
+	b.WriteString("# TYPE sdp_hub_gateway_connected_targets gauge\n")
+	mu.Lock()
+	targets := make([]string, 0, len(gatewayTargets))
+	for t := range gatewayTargets {
+		targets = append(targets, t)
+	}
+	sort.Strings(targets)
+	for _, t := range targets {
+		b.WriteString("sdp_hub_gateway_connected_targets{target=\"" + t + "\"} " +
+			strconv.FormatInt(gatewayTargets[t].Load(), 10) + "\n")
+	}
+	mu.Unlock()
 
 	b.WriteString("# HELP sdp_hub_build_info Build information (version, commit, goversion).\n")
 	b.WriteString("# TYPE sdp_hub_build_info gauge\n")
