@@ -31,7 +31,29 @@ type Artifact struct {
 	// outstanding — the row is kept only so the GC can retry).
 	CleanupState string    `gorm:"size:32;not null;default:active" json:"cleanupState,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
+
+	// --- ui-12 §6.2 制品安全与合规字段（S-2 裁定：字段 + scan-result 双通道） ---
+	// ScanStatus: unscanned（默认）| scanning | scanned。扫描器经
+	// POST /artifacts/:id/scan-result 回写；没有内置扫描器，状态即事实。
+	ScanStatus string `gorm:"size:16;not null;default:unscanned" json:"scanStatus"`
+	// Signed / Signature: 签名状态与签名者标识（如 cosign key ref）。
+	Signed    bool   `gorm:"not null;default:false" json:"signed"`
+	Signature string `gorm:"size:256" json:"signature,omitempty"`
+	// SbomSummary 是 SBOM 摘要（格式 + 包数等），完整 SBOM 走对象存储，不在行内。
+	SbomSummary string `gorm:"type:text" json:"sbomSummary,omitempty"`
+	// 漏洞严重级别计数（扫描器聚合值，不展开明细行——明细属扫描器域）。
+	SevCritical int `gorm:"not null;default:0" json:"sevCritical"`
+	SevHigh     int `gorm:"not null;default:0" json:"sevHigh"`
+	SevMedium   int `gorm:"not null;default:0" json:"sevMedium"`
+	SevLow      int `gorm:"not null;default:0" json:"sevLow"`
 }
+
+// ScanStatus values for Artifact.ScanStatus.
+const (
+	ScanUnscanned = "unscanned"
+	ScanScanning  = "scanning"
+	ScanScanned   = "scanned"
+)
 
 // CleanupState values. Kept as constants (not bare strings) so the GC query and
 // the listing filter cannot drift apart silently.

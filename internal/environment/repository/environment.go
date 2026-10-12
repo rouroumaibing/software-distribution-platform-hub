@@ -54,3 +54,24 @@ func (r *EnvironmentRepository) ResolveKey(envID uuid.UUID) (string, error) {
 	}
 	return env.Key, nil
 }
+
+// UniqueForComponentTargetNamespace resolves the single environment matching
+// the trigger-time (component, target, namespace) triple — the run↔environment
+// binding behind the 环境覆盖档 approval policy (ui-12 §5.1). ok=false when zero
+// OR multiple rows match: an ambiguous binding is treated as "no environment"
+// rather than guessed (fail-open, same philosophy as the change-window config
+// read — 归属影响的是指派精度与统计维度，不是事故阻断).
+func (r *EnvironmentRepository) UniqueForComponentTargetNamespace(componentID, targetID uuid.UUID, namespace string) (envID uuid.UUID, ok bool, err error) {
+	var rows []models.Environment
+	err = r.DB.Select("id").
+		Where("component_id = ? AND target_id = ? AND namespace = ?", componentID, targetID, namespace).
+		Limit(2).
+		Find(&rows).Error
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	if len(rows) != 1 {
+		return uuid.Nil, false, nil
+	}
+	return rows[0].ID, true, nil
+}

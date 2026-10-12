@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // 审计查询的**查询形状**回归测试（与 platform_binding_dryrun_test.go 同源
@@ -95,5 +97,62 @@ func TestAuditQuery_LimitClamped(t *testing.T) {
 				t.Errorf("SQL 不应含 %q\nSQL: %s", tc.notIn, sql)
 			}
 		})
+	}
+}
+
+// 结构化高危上下文过滤（ui-12 §4.4 / N-22）：ticket 精确匹配、reason 子串
+// 匹配；两个过滤缺省时不得出现在 WHERE 里（与"空 query 退化最新 N 条"
+// 同一条纪律——过滤写错不报错才是最危险的静默 bug）。
+func TestAuditQuery_TicketReasonShape(t *testing.T) {
+	rec, gdb := openDryRun(t)
+	repo := NewAuditLogRepository(gdb)
+
+	if _, err := repo.Query(AuditQuery{
+		Ticket:         "CHG-1287",
+		ReasonContains: "变更评审",
+	}); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+
+	sql := rec.joined()
+	for _, want := range []string{"ticket =", "reason ILIKE"} {
+		if !strings.Contains(sql, want) {
+			t.Errorf("SQL 缺少过滤片段 %q\n完整 SQL:\n%s", want, sql)
+		}
+	}
+
+	rec2, gdb2 := openDryRun(t)
+	repo2 := NewAuditLogRepository(gdb2)
+	if _, err := repo2.Query(AuditQuery{Subject: "user-abc"}); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	sql2 := rec2.joined()
+	if strings.Contains(sql2, "ticket") || strings.Contains(sql2, "reason") {
+		t.Errorf("未传 ticket/reason 时 SQL 不应包含相关条件\nSQL: %s", sql2)
+	}
+}
+
+// 组件归属过滤（ui-12 5.4 组件级审计下沉）：ComponentID 非 nil 时必须出现在
+// WHERE 里——这是组件管理员视图的唯一边界，丢失=越权看到全平台行；nil 时
+// 不得出现（平台管理员全量语义不变）。
+func TestAuditQuery_ComponentIDShape(t *testing.T) {
+	rec, gdb := openDryRun(t)
+	repo := NewAuditLogRepository(gdb)
+
+	cid := uuid.New()
+	if _, err := repo.Query(AuditQuery{ComponentID: &cid}); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !strings.Contains(rec.joined(), "component_id =") {
+		t.Errorf("携带 ComponentID 时 SQL 应含 component_id 过滤\nSQL: %s", rec.joined())
+	}
+
+	rec2, gdb2 := openDryRun(t)
+	repo2 := NewAuditLogRepository(gdb2)
+	if _, err := repo2.Query(AuditQuery{}); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if strings.Contains(rec2.joined(), "component_id") {
+		t.Errorf("未传 ComponentID 时 SQL 不应包含 component_id 条件\nSQL: %s", rec2.joined())
 	}
 }

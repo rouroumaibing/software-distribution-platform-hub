@@ -16,6 +16,7 @@ import (
 	orgmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/models"
 	permmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
+	platformmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/platform/models"
 	runmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
 	targetmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/target/models"
 
@@ -85,6 +86,7 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&orgmodels.Org{}, &orgmodels.ServiceTree{},
 		&catalogmodels.Service{},
 		&componentmodels.Component{}, &componentmodels.ComponentConfig{}, &componentmodels.ComponentConfigHistory{},
+		&componentmodels.ConfigSnapshot{}, &componentmodels.VariableGroup{}, &componentmodels.ComponentVariableGroupBinding{},
 		&targetmodels.Target{},
 		// §9.9 / §9.5 接入编排：hub 侧 agent 操作台账（exec / install / upgrade）
 		// 及其流式输出分片（SSE 重放源，migration 0018）。
@@ -93,10 +95,22 @@ func Open(cfg Config) (*gorm.DB, error) {
 		&credentialmodels.Credential{},
 		&environmentgroupmodels.EnvironmentGroup{},
 		&pipelinemodels.Pipeline{}, &pipelinemodels.PipelineStage{}, &pipelinemodels.PipelineTaskTemplate{}, &pipelinemodels.PipelineVersion{},
+		// 触发器配置（ui-12 §4.3 / N-21）：cron / webhook / event 三型。
+		&pipelinemodels.PipelineTrigger{},
 		&artifactmodels.Artifact{},
 		&runmodels.PipelineRun{}, &runmodels.TaskRun{}, &runmodels.TaskRunLog{}, &runmodels.RolloutRun{}, &runmodels.Approval{}, &runmodels.DispatchJob{}, &runmodels.PipelineApproval{},
+		// 审批策略（ui-12 §5.1 / 决策 #4）：组件默认 + 环境覆盖两档。
+		&runmodels.ApprovalPolicy{},
 		// 服务端通知已读游标（RUNNER-REFLUX-SPEC §6 / STATUS #20 hub 半边）。
 		&notificationmodels.NotificationRead{},
+		// §5.2 通知订阅（决策 #5 收敛：邮箱渠道）。
+		&notificationmodels.Subscription{},
+		// §5.1 变更窗口 / §6.3 平台设置（平台级 KV，单表多 key）。
+		&platformmodels.Setting{},
+		// §6.1 依赖图（服务树治理）。
+		&componentmodels.ComponentDependency{},
+		// §6.4 个人访问令牌（S-1：只存哈希，明文一次）。
+		&permmodels.PersonalAccessToken{},
 		// 无 `users` 表（D3）—— hub 对身份无状态（ACCOUNT-PERMISSION-MODEL
 		// §2.2），主体一律取 token `sub`。Role 仍保留（V1 `roles` 表本身不在
 		// D3 的确认范围内，见 plans/UNIMPLEMENTED-MODULES-PLAN.md §14）。

@@ -54,3 +54,78 @@ func (r *PipelineApprovalRepository) ListPending(limit int) ([]models.PipelineAp
 	err := q.Find(&items).Error
 	return items, err
 }
+
+// ListCenter serves the approval center (ui-12 §5.1): pending-assigned-to-me /
+// initiated-by-me / decided-by-me. `assignee` matches the JSON assignee list
+// with an exact-quoted LIKE (subject 含引号不存在 —— 主体是 token sub)。
+func (r *PipelineApprovalRepository) ListCenter(view, subject string, limit int) ([]models.PipelineApproval, error) {
+	var items []models.PipelineApproval
+	q := r.DB.Order("created_at desc")
+	switch view {
+	case "pending":
+		q = q.Where("status = ?", "Pending")
+		if subject != "" {
+			// 空指派 = 任意审批人；非空指派按精确引号匹配成员。
+			q = q.Where("assignee = '' OR assignee LIKE ?", `%"`+subject+`"%`)
+		}
+	case "initiated":
+		q = q.Where("requested_by = ?", subject)
+	case "decided":
+		q = q.Where("approver = ? AND status <> ?", subject, "Pending")
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.Find(&items).Error
+	return items, err
+}
+
+// ---- ApprovalPolicy（ui-12 §5.1 / 决策 #4）---------------------------------
+
+// UpsertPolicy writes the policy for (component, env) — env NULL means the
+// component-wide default. One row per scope key.
+func (r *PipelineApprovalRepository) UpsertPolicy(p *models.ApprovalPolicy) error {
+	var existing models.ApprovalPolicy
+	q := r.DB.Where("component_id = ?", p.ComponentID)
+	if p.EnvironmentID == nil {
+		q = q.Where("environment_id IS NULL")
+	} else {
+		q = q.Where("environment_id = ?", *p.EnvironmentID)
+	}
+	err := q.First(&existing).Error
+	if err == nil {
+		existing.Mode = p.Mode
+		existing.MinApprovals = p.MinApprovals
+		existing.Assignees = p.Assignees
+		existing.TimeoutSeconds = p.TimeoutSeconds
+		return r.DB.Save(&existing).Error
+	}
+	if err != gorm.ErrRecordNotFound {
+		return err
+	}
+	return r.DB.Create(p).Error
+}
+
+func (r *PipelineApprovalRepository) ListPolicies(componentID uuid.UUID) ([]models.ApprovalPolicy, error) {
+	var items []models.ApprovalPolicy
+	err := r.DB.Where("component_id = ?", componentID).Order("environment_id asc").Find(&items).Error
+	return items, err
+}
+
+// PolicyFor resolves the effective policy for a component+environment:
+// the environment override wins, else the component default, else nil.
+func (r *PipelineApprovalRepository) PolicyFor(componentID, environmentID uuid.UUID) (*models.ApprovalPolicy, error) {
+	var p models.ApprovalPolicy
+	err := r.DB.Where("component_id = ? AND environment_id = ?", componentID, environmentID).First(&p).Error
+	if err == nil {
+		return &p, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return nil, err
+	}
+	err = r.DB.Where("component_id = ? AND environment_id IS NULL", componentID).First(&p).Error
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}

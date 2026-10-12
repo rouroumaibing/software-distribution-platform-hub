@@ -24,6 +24,16 @@ type EnvKeyResolver interface {
 type ComponentConfigService struct {
 	repo    *repository.ComponentConfigRepository
 	envKeys EnvKeyResolver
+	// snapshots versions the whole-environment config on every mutation
+	// (ui-12 §4.1/§4.2). Optional — nil (legacy wiring / tests) means no
+	// snapshot capture happens.
+	snapshots *ConfigSnapshotService
+}
+
+// AttachSnapshots wires the versioning hook after construction (main.go) so
+// existing constructors and tests keep compiling unchanged.
+func (s *ComponentConfigService) AttachSnapshots(svc *ConfigSnapshotService) {
+	s.snapshots = svc
 }
 
 func NewComponentConfigService(repo *repository.ComponentConfigRepository, envKeys EnvKeyResolver) *ComponentConfigService {
@@ -76,7 +86,7 @@ func (s *ComponentConfigService) Upsert(cfg *models.ComponentConfig, changedBy *
 	if cfg.IsSecret {
 		newValue = "<secret>"
 	}
-	return s.repo.LogHistory(&models.ComponentConfigHistory{
+	if err := s.repo.LogHistory(&models.ComponentConfigHistory{
 		ComponentID:    cfg.ComponentID,
 		EnvironmentID:  cfg.EnvironmentID,
 		EnvironmentKey: s.envKeySnapshot(cfg.EnvironmentID),
@@ -84,7 +94,18 @@ func (s *ComponentConfigService) Upsert(cfg *models.ComponentConfig, changedBy *
 		Action:         action,
 		NewValue:       newValue,
 		ChangedBy:      changedBy,
-	})
+	}); err != nil {
+		applog.Warnf("config history append failed (non-blocking): %v", err)
+	}
+	if s.snapshots != nil {
+		// Whole-environment version capture (§4.1). Non-blocking: a snapshot
+		// failure must not fail the config write the user already got.
+		comment := "配置变更 " + cfg.Key
+		if err := s.snapshots.Capture(cfg.ComponentID, cfg.EnvironmentID, comment, changedBy); err != nil {
+			applog.Warnf("config snapshot capture failed (non-blocking): %v", err)
+		}
+	}
+	return nil
 }
 
 // Delete removes a config key and writes a delete row to the audit trail,
@@ -103,7 +124,7 @@ func (s *ComponentConfigService) Delete(id uuid.UUID, changedBy *string) error {
 	if old.IsSecret {
 		oldValue = "<secret>"
 	}
-	return s.repo.LogHistory(&models.ComponentConfigHistory{
+	if err := s.repo.LogHistory(&models.ComponentConfigHistory{
 		ComponentID:    old.ComponentID,
 		EnvironmentID:  old.EnvironmentID,
 		EnvironmentKey: s.envKeySnapshot(old.EnvironmentID),
@@ -111,5 +132,14 @@ func (s *ComponentConfigService) Delete(id uuid.UUID, changedBy *string) error {
 		Action:         "delete",
 		OldValue:       oldValue,
 		ChangedBy:      changedBy,
-	})
+	}); err != nil {
+		applog.Warnf("config history append failed (non-blocking): %v", err)
+	}
+	if s.snapshots != nil {
+		comment := "删除配置 " + old.Key
+		if err := s.snapshots.Capture(old.ComponentID, old.EnvironmentID, comment, changedBy); err != nil {
+			applog.Warnf("config snapshot capture failed (non-blocking): %v", err)
+		}
+	}
+	return nil
 }

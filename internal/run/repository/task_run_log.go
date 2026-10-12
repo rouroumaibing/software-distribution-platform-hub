@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
@@ -28,4 +30,19 @@ func (r *TaskRunLogRepository) ListByRunTask(runID uuid.UUID, taskName string, p
 	return common.NewRepository[models.TaskRunLog](r.DB).List(p, func(db *gorm.DB) *gorm.DB {
 		return db.Where("pipeline_run_id = ? AND task_name = ?", runID, taskName).Order("created_at asc, id asc")
 	})
+}
+
+// ListRunTail returns run-wide chunks (all tasks) created at/after `since`,
+// ordered chronologically — the SSE tail cursor (ui-12 §5.5). UUID pk has no
+// monotonic integer, so the cursor is created_at plus a caller-side
+// already-sent id set for same-timestamp collisions.
+func (r *TaskRunLogRepository) ListRunTail(runID uuid.UUID, since time.Time, limit int) ([]models.TaskRunLog, error) {
+	var out []models.TaskRunLog
+	q := r.DB.Where("pipeline_run_id = ? AND created_at >= ?", runID, since).
+		Order("created_at asc, id asc")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.Find(&out).Error
+	return out, err
 }

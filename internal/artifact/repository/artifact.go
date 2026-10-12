@@ -36,6 +36,57 @@ func (r *ArtifactRepository) FindByComponentID(componentID uuid.UUID, p common.P
 	return r.List(p, func(db *gorm.DB) *gorm.DB { return liveForComponent(db, componentID) })
 }
 
+// ArtifactSearchFilter is the §6.2 跨组件检索的过滤参数。零值字段不进谓词。
+type ArtifactSearchFilter struct {
+	Name         string // 版本 ILIKE（复用字段：检索主键是 version；名称=storage key 尾段）
+	Version      string
+	ComponentID  uuid.UUID
+	ArtifactType string
+	Since        *time.Time
+	Until        *time.Time
+	ScanStatus   string
+	Signed       *bool
+}
+
+// Search 跨组件制品检索（§6.2）：同一 live 谓词（排除 pending_deletion）+
+// 可选过滤。DryRun 形状由 findQuery 钉住。
+func (r *ArtifactRepository) Search(f ArtifactSearchFilter, p common.Pagination) ([]models.Artifact, int64, error) {
+	return r.List(p, func(db *gorm.DB) *gorm.DB {
+		q := db.Model(&models.Artifact{}).
+			Where("cleanup_state <> ?", models.CleanupStatePendingDeletion)
+		if f.Name != "" {
+			q = q.Where("storage_key ILIKE ?", "%"+f.Name+"%")
+		}
+		if f.Version != "" {
+			q = q.Where("version ILIKE ?", "%"+f.Version+"%")
+		}
+		if f.ComponentID != uuid.Nil {
+			q = q.Where("component_id = ?", f.ComponentID)
+		}
+		if f.ArtifactType != "" {
+			q = q.Where("artifact_type = ?", f.ArtifactType)
+		}
+		if f.Since != nil {
+			q = q.Where("created_at >= ?", *f.Since)
+		}
+		if f.Until != nil {
+			q = q.Where("created_at <= ?", *f.Until)
+		}
+		if f.ScanStatus != "" {
+			q = q.Where("scan_status = ?", f.ScanStatus)
+		}
+		if f.Signed != nil {
+			q = q.Where("signed = ?", *f.Signed)
+		}
+		return q.Order("created_at desc")
+	})
+}
+
+// ApplyScanResult upserts the §6.2 安全扫描字段（幂等：以最后一次回写为准）。
+func (r *ArtifactRepository) ApplyScanResult(id uuid.UUID, up map[string]any) error {
+	return r.DB.Model(&models.Artifact{}).Where("id = ?", id).Updates(up).Error
+}
+
 // ExistsByComponentAndKey reports whether a live (non-cleanup-pending) row
 // already registers this storage key for the component. G-14: ApplyStatus
 // callbacks fire once per status update, so RegisterProduced needs an

@@ -12,7 +12,7 @@
 INSERT INTO platform_roles (id, org_id, name, description, actions, is_system, created_at) VALUES
 ('f1000000-0000-0000-0000-000000000001', NULL, 'sdp-admin',
  '平台管理员：全部页面与全局动作',
- '["page:overview:view","page:servicetree:view","page:settings:view","org:manage","user:manage","component:create","environment:create"]'::jsonb,
+ '["page:overview:view","page:servicetree:view","page:settings:view","org:manage","user:manage","ops:manage","component:create","environment:create"]'::jsonb,
  true, now()),
 ('f1000000-0000-0000-0000-000000000002', NULL, 'sdp-viewer',
  '平台只读：仅页面查看',

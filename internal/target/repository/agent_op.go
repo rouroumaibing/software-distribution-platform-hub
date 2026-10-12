@@ -116,3 +116,15 @@ func (r *AgentOpRepository) ListTargetsWithRunningUpgrades() ([]uuid.UUID, error
 	}
 	return ids, nil
 }
+
+// ListByStatus returns every op (any target) in one lifecycle status — the
+// approval-center listing (pending_approval) and the approval-timeout sweep
+// both read the full table by status, not scoped to a single target.
+func (r *AgentOpRepository) ListByStatus(status string) ([]models.AgentOp, error) {
+	var items []models.AgentOp
+	if err := r.db.Where("status = ?", status).
+		Order("created_at ASC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}

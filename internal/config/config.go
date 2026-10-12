@@ -44,6 +44,10 @@ type Config struct {
 	// 挂起"），不是可选的运维优化，故默认开启；≤0 关闭。
 	ApprovalTimeoutInterval time.Duration
 
+	// TriggerTickInterval is the cron trigger scheduler's tick cadence
+	// (ui-12 §4.3 / N-21). 默认 60s（分钟级 cron 的粒度下限）；≤0 关闭调度。
+	TriggerTickInterval time.Duration
+
 	// DB pool tuning (optional; db.Open applies sane defaults when zero).
 	DBMaxIdleConns    int
 	DBMaxOpenConns    int
@@ -106,6 +110,15 @@ type Config struct {
 	// each row costs one blocking object-store call.
 	ArtifactGCBatch int
 
+	// --- §5.2 邮件渠道（决策 #5 收敛：本期仅邮箱） -------------------------
+	// SMTP 全空 = 渠道未配置：订阅端点可用、分发为受控 no-op（NoopMailer），
+	// 站内通知中心不受影响。
+	SMTPHost     string
+	SMTPPort     int
+	SMTPFrom     string
+	SMTPUsername string
+	SMTPPassword string
+
 	// --- package version matrix (§9.10) -----------------------------------
 	// Read from the package-versions ConfigMap (hub chart renders it from
 	// build/hub/versions.yaml). Surfaced by GET /package-versions so the
@@ -159,6 +172,7 @@ func Load() *Config {
 		// 60s 一轮：审批超时的粒度是分钟级，扫得比这更勤没有收益（每轮只是一次
 		// "取 Pending 行"的索引查询）。
 		ApprovalTimeoutInterval: time.Duration(getenvInt("APPROVAL_TIMEOUT_INTERVAL", 60)) * time.Second,
+		TriggerTickInterval:     time.Duration(getenvInt("TRIGGER_TICK_INTERVAL", 60)) * time.Second,
 		PprofEnabled:            getenvBool("HUB_PPROF_ENABLED", false),
 		SwaggerEnabled:          getenvBool("HUB_SWAGGER_ENABLED", false),
 
@@ -180,6 +194,13 @@ func Load() *Config {
 		// 默认 0 = 关闭：保留期 GC 会**删**制品，必须显式开启。
 		ArtifactGCInterval: time.Duration(getenvInt("ARTIFACT_GC_INTERVAL", 0)) * time.Second,
 		ArtifactGCBatch:    getenvInt("ARTIFACT_GC_BATCH", 0),
+
+		// §5.2 邮件渠道：全空 = 渠道未配置（订阅可存、分发 no-op）。
+		SMTPHost:     getenv("SMTP_HOST", ""),
+		SMTPPort:     getenvInt("SMTP_PORT", 587),
+		SMTPFrom:     getenv("SMTP_FROM", ""),
+		SMTPUsername: getenv("SMTP_USERNAME", ""),
+		SMTPPassword: getenv("SMTP_PASSWORD", ""),
 
 		// G-1：注入执行 Job 的 SA 名；runner 会在运行命名空间幂等 ensure
 		// 该 SA + 最小部署 Role/RoleBinding。置空则回到旧行为（default SA）。

@@ -1,7 +1,10 @@
 package models
 
 import (
+	"encoding/json"
+
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 )
@@ -23,6 +26,31 @@ type Pipeline struct {
 	// Version increments on every structural edit; a PipelineRun records
 	// which version it was triggered with.
 	Version int `gorm:"not null;default:1" json:"version"`
+
+	// Params is the runtime-parameter declaration (ui-12 §5.3, N-26):
+	// []ParamDecl as JSON. It drives the trigger dialog's form and seeds
+	// defaults in the trigger-time param resolution (run inputs override).
+	Params datatypes.JSON `json:"params,omitempty"`
+}
+
+// ParamDecl declares one runtime parameter of a pipeline.
+type ParamDecl struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"` // string | number | boolean | choice
+	Default     string   `json:"default,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	Options     []string `json:"options,omitempty"` // choice 枚举
+	Description string   `json:"description,omitempty"`
+}
+
+// DecodeParamDecls parses the stored Params body; empty/invalid → nil.
+func DecodeParamDecls(raw datatypes.JSON) []ParamDecl {
+	var decls []ParamDecl
+	if len(raw) == 0 {
+		return nil
+	}
+	_ = json.Unmarshal(raw, &decls)
+	return decls
 }
 
 func (Pipeline) TableName() string { return "pipelines" }

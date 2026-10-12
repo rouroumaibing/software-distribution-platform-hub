@@ -102,6 +102,7 @@ func (s *PipelineService) Update(id uuid.UUID, p *models.Pipeline) error {
 	existing.Name = p.Name
 	existing.Kind = p.Kind
 	existing.Description = p.Description
+	existing.Params = p.Params
 	if s.versions != nil {
 		if err := s.repo.Update(existing); err != nil {
 			return err

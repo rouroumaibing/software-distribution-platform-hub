@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/http"
 	"strings"
 	"time"
 
@@ -99,6 +100,53 @@ func (s *ArtifactService) Get(id uuid.UUID) (*models.Artifact, error) { return s
 
 func (s *ArtifactService) ListByComponent(componentID uuid.UUID, p common.Pagination) ([]models.Artifact, int64, error) {
 	return s.repo.FindByComponentID(componentID, p)
+}
+
+// Search is the §6.2 跨组件检索。
+func (s *ArtifactService) Search(f repository.ArtifactSearchFilter, p common.Pagination) ([]models.Artifact, int64, error) {
+	return s.repo.Search(f, p)
+}
+
+// ScanResultInput is the POST /artifacts/:id/scan-result body (S-2 双通道的
+// 推通道）：扫描器聚合结果，一次全量覆盖。Signed=false 且 Signature 留空 =
+// 明确「未签名」回写（不回写 = 字段保持原值）。
+type ScanResultInput struct {
+	ScanStatus  string `json:"scanStatus"` // scanned（默认）
+	Signed      *bool  `json:"signed,omitempty"`
+	Signature   string `json:"signature,omitempty"`
+	SbomSummary string `json:"sbomSummary,omitempty"`
+	SevCritical int    `json:"sevCritical"`
+	SevHigh     int    `json:"sevHigh"`
+	SevMedium   int    `json:"sevMedium"`
+	SevLow      int    `json:"sevLow"`
+}
+
+// ApplyScanResult upserts scan fields on one artifact. 幂等、全量覆盖。
+func (s *ArtifactService) ApplyScanResult(id uuid.UUID, in ScanResultInput) error {
+	if in.ScanStatus == "" {
+		in.ScanStatus = models.ScanScanned
+	}
+	if in.ScanStatus != models.ScanUnscanned && in.ScanStatus != models.ScanScanning && in.ScanStatus != models.ScanScanned {
+		return common.DomainErrorWithReasons(common.KindArtifact, http.StatusBadRequest, 1,
+			"invalid scan status", "scanStatus 须为 unscanned/scanning/scanned")
+	}
+	up := map[string]any{
+		"scan_status":  in.ScanStatus,
+		"sev_critical": in.SevCritical,
+		"sev_high":     in.SevHigh,
+		"sev_medium":   in.SevMedium,
+		"sev_low":      in.SevLow,
+	}
+	if in.Signed != nil {
+		up["signed"] = *in.Signed
+	}
+	if in.Signature != "" {
+		up["signature"] = in.Signature
+	}
+	if in.SbomSummary != "" {
+		up["sbom_summary"] = in.SbomSummary
+	}
+	return s.repo.ApplyScanResult(id, up)
 }
 
 // Delete removes the DB row, then best-effort deletes the underlying object,

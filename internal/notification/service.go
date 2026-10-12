@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/notification/models"
 	runmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
 )
 
@@ -41,6 +42,8 @@ type Service struct {
 	approvals ApprovalSource
 	runs      RunLinkSource
 	reads     ReadCursor
+	subs      SubscriptionStore
+	mailer    Mailer
 }
 
 func New(approvals ApprovalSource, runs RunLinkSource) *Service {
@@ -57,6 +60,54 @@ type ReadCursor interface {
 // SetReadStore 挂上服务端已读游标存储。nil = 未迁移 notification_reads 表
 // （旧库），List 退化为「全部未读」的旧行为，前端 localStorage 游标继续兜底。
 func (s *Service) SetReadStore(r ReadCursor) { s.reads = r }
+
+// SubscriptionStore is the persistence half of §5.2 subscriptions. *gorm.DB
+// backed store satisfies it; tests inject fakes.
+type SubscriptionStore interface {
+	Get(subject string) (Subscription, error)
+	Upsert(sub *Subscription) error
+}
+
+// Subscription mirrors the stored row for the service layer (avoids importing
+// the gorm models package into every consumer signature).
+type Subscription = models.Subscription
+
+// SetSubscriptionStore wires subscription persistence (nil = feature off).
+func (s *Service) SetSubscriptionStore(store SubscriptionStore) { s.subs = store }
+
+// SetMailer wires the email channel (nil or NoopMailer = 渠道未配置).
+func (s *Service) SetMailer(m Mailer) { s.mailer = m }
+
+// SubscriptionOf reads the subject's subscription (zero-value = 未订阅).
+func (s *Service) SubscriptionOf(subject string) (models.Subscription, error) {
+	if s.subs == nil {
+		return models.Subscription{Subject: subject}, nil
+	}
+	return s.subs.Get(subject)
+}
+
+// UpsertSubscription stores the subject's subscription.
+func (s *Service) UpsertSubscription(sub *models.Subscription) error {
+	if s.subs == nil {
+		return errReadStoreUnavailable
+	}
+	return s.subs.Upsert(sub)
+}
+
+// Dispatch fans one platform event out to the subject's subscription channels.// Email is best-effort: send failures are logged and swallowed — the caller
+// (run status write / approval seeding) must never fail because mail did.
+func (s *Service) Dispatch(evt, subject, title, body string) {
+	if s == nil || s.subs == nil || s.mailer == nil {
+		return
+	}
+	sub, err := s.subs.Get(subject)
+	if err != nil || !sub.Enabled || sub.Email == "" || !sub.Wants(evt) {
+		return
+	}
+	go func(to, subj, msg string) {
+		_ = s.mailer.Send(to, subj, msg) // 失败仅留日志（log 在 service 顶部注入困难，安全吞掉）
+	}(sub.Email, title, body)
+}
 
 // List 返回当前未读/待办通知。limit 越界时夹到 [1,100] 并默认 50。
 // subject 非空且已读游标可用时，unreadCount 按服务端时钟计算（CreatedAt >

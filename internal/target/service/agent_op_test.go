@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -99,6 +100,16 @@ func (f *fakeAgentOpRepo) ListTargetsWithRunningUpgrades() ([]uuid.UUID, error) 
 	return ids, nil
 }
 
+func (f *fakeAgentOpRepo) ListByStatus(status string) ([]models.AgentOp, error) {
+	out := make([]models.AgentOp, 0)
+	for _, op := range f.ops {
+		if op.Status == status {
+			out = append(out, *op)
+		}
+	}
+	return out, nil
+}
+
 type fakeDispatcher struct {
 	dispatched []*models.AgentOp
 	err        error
@@ -131,7 +142,7 @@ func TestAgentOpCreate_RequiresTarget(t *testing.T) {
 func TestAgentOpCreate_ForcesQueued(t *testing.T) {
 	repo := newFakeAgentOpRepo()
 	svc := NewAgentOpService(repo)
-	op := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpUpgrade, Status: "running"}
+	op := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpExec, Status: "running"}
 	if err := svc.Create(op); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -140,6 +151,25 @@ func TestAgentOpCreate_ForcesQueued(t *testing.T) {
 	}
 	if len(repo.created) != 1 {
 		t.Fatalf("op must be persisted once, got %d", len(repo.created))
+	}
+}
+
+// B4：upgrade op 创建即入审批闸（pending_approval），不在创建时派发——
+// 高危自升级必须人工批准后才进 queued。
+func TestAgentOpCreate_UpgradeGatedPendingApproval(t *testing.T) {
+	disp := &fakeDispatcher{}
+	repo := newFakeAgentOpRepo()
+	svc := NewAgentOpService(repo)
+	svc.SetDispatcher(disp)
+	op := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpUpgrade, Status: "running"}
+	if err := svc.Create(op); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if op.Status != models.AgentOpPendingApproval {
+		t.Fatalf("upgrade op must start pending_approval, got %q", op.Status)
+	}
+	if len(disp.dispatched) != 0 {
+		t.Fatalf("gated upgrade must not dispatch at create, got %d", len(disp.dispatched))
 	}
 }
 
@@ -247,8 +277,8 @@ func TestAgentOpDrainTarget_RedispatchesQueued(t *testing.T) {
 	svc := NewAgentOpService(repo)
 	svc.SetDispatcher(disp)
 
-	a, b := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpExec},
-		&models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpExec}
+	a, b := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpExec, Status: models.AgentOpQueued},
+		&models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpExec, Status: models.AgentOpQueued}
 	repo.queued = []*models.AgentOp{a, b}
 	if err := svc.DrainTarget(context.Background(), uuid.New()); err != nil {
 		t.Fatalf("drain: %v", err)
@@ -263,4 +293,88 @@ func opStatus(op *models.AgentOp) string {
 		return "<nil>"
 	}
 	return op.Status
+}
+
+// B4：升级审批通过后 pending_approval→queued 并派发到在线 runner（修 §16.5
+// 死锁：此前 upgrade 在 tryDispatch 被排除，永远 queued 无法升级）。
+func TestApproveUpgrade_ReleasesAndDispatches(t *testing.T) {
+	repo := newFakeAgentOpRepo()
+	disp := &fakeDispatcher{}
+	svc := NewAgentOpService(repo)
+	svc.SetDispatcher(disp)
+	id := uuid.New()
+	repo.ops[id] = &models.AgentOp{ID: id, TargetID: uuid.New(), OpType: models.AgentOpUpgrade, Status: models.AgentOpPendingApproval}
+
+	if err := svc.ApproveUpgrade(id, "ops-1"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if repo.ops[id].Status != models.AgentOpQueued {
+		t.Fatalf("approved op must be queued, got %q", repo.ops[id].Status)
+	}
+	if len(disp.dispatched) != 1 {
+		t.Fatalf("approved upgrade must dispatch, got %d", len(disp.dispatched))
+	}
+	if !strings.Contains(repo.ops[id].Message, "ops-1") {
+		t.Fatalf("approver should be stamped, got %q", repo.ops[id].Message)
+	}
+}
+
+// B4：非待审批状态的 op 审批须 409，不可重复操作。
+func TestApproveUpgrade_OnlyPendingAllowed(t *testing.T) {
+	repo := newFakeAgentOpRepo()
+	svc := NewAgentOpService(repo)
+	id := uuid.New()
+	repo.ops[id] = &models.AgentOp{ID: id, TargetID: uuid.New(), OpType: models.AgentOpUpgrade, Status: models.AgentOpQueued}
+	if err := svc.ApproveUpgrade(id, "ops-1"); err == nil {
+		t.Fatal("approving a non-pending op must fail")
+	}
+	if err := svc.RejectUpgrade(id, "not needed", "ops-1"); err == nil {
+		t.Fatal("rejecting a non-pending op must fail")
+	}
+}
+
+// B4：拒绝关闭 upgrade op，不派发，理由留痕。
+func TestRejectUpgrade_ClosesWithoutDispatch(t *testing.T) {
+	repo := newFakeAgentOpRepo()
+	disp := &fakeDispatcher{}
+	svc := NewAgentOpService(repo)
+	svc.SetDispatcher(disp)
+	id := uuid.New()
+	repo.ops[id] = &models.AgentOp{ID: id, TargetID: uuid.New(), OpType: models.AgentOpUpgrade, Status: models.AgentOpPendingApproval}
+
+	if err := svc.RejectUpgrade(id, "version regression risk", "ops-2"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if repo.ops[id].Status != models.AgentOpFailed {
+		t.Fatalf("rejected op must be failed, got %q", repo.ops[id].Status)
+	}
+	if len(disp.dispatched) != 0 {
+		t.Fatalf("rejected upgrade must not dispatch, got %d", len(disp.dispatched))
+	}
+	if !strings.Contains(repo.ops[id].Message, "version regression risk") {
+		t.Fatalf("reject reason should be stamped, got %q", repo.ops[id].Message)
+	}
+}
+
+// B4：审批超时回收（B-11 语义复用）—— 超过 maxAge 的 pending_approval 自动判
+// failed；未超时的不受影响。
+func TestSweepApprovalTimeouts_AutoRejectsStale(t *testing.T) {
+	repo := newFakeAgentOpRepo()
+	svc := NewAgentOpService(repo)
+	stale := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpUpgrade,
+		Status: models.AgentOpPendingApproval, CreatedAt: time.Now().Add(-48 * time.Hour)}
+	fresh := &models.AgentOp{ID: uuid.New(), TargetID: uuid.New(), OpType: models.AgentOpUpgrade,
+		Status: models.AgentOpPendingApproval, CreatedAt: time.Now()}
+	repo.ops[stale.ID] = stale
+	repo.ops[fresh.ID] = fresh
+
+	if err := svc.SweepApprovalTimeouts(context.Background(), 24*time.Hour); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if repo.ops[stale.ID].Status != models.AgentOpFailed {
+		t.Fatalf("stale op must be failed, got %q", repo.ops[stale.ID].Status)
+	}
+	if repo.ops[fresh.ID].Status != models.AgentOpPendingApproval {
+		t.Fatalf("fresh op must stay pending, got %q", repo.ops[fresh.ID].Status)
+	}
 }

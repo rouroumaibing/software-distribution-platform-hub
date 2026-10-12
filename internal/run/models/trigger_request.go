@@ -40,4 +40,9 @@ type TriggerRequest struct {
 
 	// TriggeredBy is the hub-side user/system identity starting the run.
 	TriggeredBy string `json:"triggeredBy,omitempty"`
+
+	// TriggerSource is the invocation channel: manual | cron | webhook | event.
+	// Not client-settable (json:"-") — the handler stamps "manual"; the
+	// trigger service stamps its own channel (ui-12 §4.3 运行列表触发方式列).
+	TriggerSource string `json:"-"`
 }

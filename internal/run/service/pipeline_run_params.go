@@ -12,6 +12,8 @@ import (
 
 	runmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"
 
+	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
+
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 )
 
@@ -30,6 +32,65 @@ func (s *PipelineRunService) SetArtifactRegistrar(r ArtifactRegistry) { s.artifa
 // SetJobServiceAccount wires the G-1 SA name injected into every dispatched
 // PipelineRunSpec (config SDP_JOB_SERVICE_ACCOUNT). Empty disables injection.
 func (s *PipelineRunService) SetJobServiceAccount(name string) { s.jobServiceAccount = name }
+
+// VarSource supplies the component-variable tiers of the trigger-time param
+// resolution (ui-12 §5.3 / N-26). Implemented by a small adapter over the
+// component config + variable-group services (wired in cmd/hub/main.go);
+// nil disables the tiers (tests, minimal hubs).
+type VarSource interface {
+	// ComponentParams returns the component's non-secret config entries.
+	ComponentParams(componentID uuid.UUID) []runnerapi.Param
+	// GroupParams returns the entries of the component's bound variable
+	// groups, ascending priority (the resolver applies them in order, so the
+	// last application wins duplicate keys).
+	GroupParams(componentID uuid.UUID) []runnerapi.Param
+}
+
+// SetVarSource wires the N-26 variable tiers.
+func (s *PipelineRunService) SetVarSource(v VarSource) { s.varSource = v }
+
+// triggerParams resolves the effective run params for a trigger:
+//
+//	declared defaults < group vars < component vars < run inputs
+//
+// A tier only fills keys no stronger tier provided later (later add() calls
+// overwrite earlier ones), so run inputs always win. Pure over its inputs —
+// unit-testable without a DB.
+func (s *PipelineRunService) triggerParams(p *pipelinemodels.Pipeline, runParams []runnerapi.Param) []runnerapi.Param {
+	out := []runnerapi.Param{}
+	idx := map[string]int{}
+	add := func(name, value string) {
+		if name == "" {
+			return
+		}
+		if i, ok := idx[name]; ok {
+			out[i].Value = value
+			return
+		}
+		idx[name] = len(out)
+		out = append(out, runnerapi.Param{Name: name, Value: value})
+	}
+	// 1. declared defaults (N-26): seed only when a default is set.
+	for _, d := range pipelinemodels.DecodeParamDecls(p.Params) {
+		if d.Default != "" {
+			add(d.Name, d.Default)
+		}
+	}
+	// 2/3. group vars then component vars (component wins on conflict).
+	if s.varSource != nil {
+		for _, prm := range s.varSource.GroupParams(p.ComponentID) {
+			add(prm.Name, prm.Value)
+		}
+		for _, prm := range s.varSource.ComponentParams(p.ComponentID) {
+			add(prm.Name, prm.Value)
+		}
+	}
+	// 4. run inputs (highest priority).
+	for _, prm := range runParams {
+		add(prm.Name, prm.Value)
+	}
+	return out
+}
 
 // paramSubst is the hub-side half of the G-5 parameter-injection fix: task
 // templates are stored as static definitions, so `${KEY}` placeholders in

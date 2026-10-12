@@ -84,6 +84,9 @@ func (s *stubApprovalStore) ListByRun(uuid.UUID) ([]models.PipelineApproval, err
 func (s *stubApprovalStore) ListPending(int) ([]models.PipelineApproval, error) {
 	return s.pending, nil
 }
+func (s *stubApprovalStore) ListCenter(view, subject string, limit int) ([]models.PipelineApproval, error) {
+	return nil, nil
+}
 
 type stubTaskRunStore struct {
 	taskName string

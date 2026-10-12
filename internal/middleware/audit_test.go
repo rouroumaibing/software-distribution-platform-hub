@@ -55,7 +55,7 @@ func TestAuditMiddleware_RecordsWritesOnly(t *testing.T) {
 		c.Set(contextKeyPreferredUsername, "alice")
 		c.Next()
 	})
-	r.Use(AuditMiddleware(sink))
+	r.Use(AuditMiddleware(sink, nil))
 
 	r.GET("/api/v1/things", func(c *gin.Context) { c.Status(http.StatusOK) })
 	r.POST("/api/v1/things", func(c *gin.Context) { c.Status(http.StatusCreated) })
@@ -100,11 +100,54 @@ func TestAuditMiddleware_RecordsWritesOnly(t *testing.T) {
 func TestAuditMiddleware_NilSinkIsSafe(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(AuditMiddleware(nil))
+	r.Use(AuditMiddleware(nil, nil))
 	r.POST("/api/v1/things", func(c *gin.Context) { c.Status(http.StatusOK) })
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/things", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
+	}
+}
+
+// Structured high-risk context (ui-12 §4.4 / N-22): a handler calling
+// SetAuditReason must have the reason / ticket persisted on the audit row;
+// GET requests are never audited even when a reason was set.
+func TestAuditMiddleware_CapturesReasonTicket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	sink := &captureSink{}
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(contextKeySubject, "sub-1")
+		c.Next()
+	})
+	r.Use(AuditMiddleware(sink, nil))
+
+	r.POST("/api/v1/pipelines/:id/runs/:runId/tasks/:taskName/decision", func(c *gin.Context) {
+		SetAuditReason(c, "发布单 #1287，已通过变更评审", "CHG-1287")
+		c.Status(http.StatusOK)
+	})
+	r.GET("/api/v1/things", func(c *gin.Context) {
+		SetAuditReason(c, "read ops are not audited", "CHG-0")
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost,
+		"/api/v1/pipelines/p1/runs/r1/tasks/deploy/decision", nil))
+	if len(sink.entries) != 1 {
+		t.Fatalf("POST should produce one audit entry, got %d", len(sink.entries))
+	}
+	e := sink.entries[0]
+	if e.Reason != "发布单 #1287，已通过变更评审" {
+		t.Errorf("reason = %q, want the structured reason", e.Reason)
+	}
+	if e.Ticket != "CHG-1287" {
+		t.Errorf("ticket = %q, want CHG-1287", e.Ticket)
+	}
+
+	do := httptest.NewRecorder()
+	r.ServeHTTP(do, httptest.NewRequest(http.MethodGet, "/api/v1/things", nil))
+	if len(sink.entries) != 1 {
+		t.Fatalf("GET must not be audited, got %d entries", len(sink.entries))
 	}
 }

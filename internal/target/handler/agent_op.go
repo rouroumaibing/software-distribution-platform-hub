@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/middleware"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/target/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/target/service"
 )
@@ -41,6 +42,18 @@ func (h *AgentOpHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/agent-ops/:id", h.Get)
 	rg.GET("/agent-ops/:id/stream", h.Stream)
 	rg.GET("/targets/:id/agent-ops", h.ListByTarget)
+}
+
+// RegisterApprovalRoutes mounts the human-approval surface for gated upgrade
+// ops. These are platform-level management actions (any target's upgrade may
+// be approved/rejected by an ops-role holder), so the caller must mount this
+// group behind RequirePlatformPermission(ops:manage) — exactly like the
+// platformGroup in main.go, which only installs that middleware when auth is
+// on, leaving dev mode (auth==nil) unauthenticated.
+func (h *AgentOpHandler) RegisterApprovalRoutes(rg *gin.RouterGroup) {
+	rg.GET("/agent-ops", h.ListAll) // 平台级台账，可选 ?status= 过滤（审批中心用 pending_approval）
+	rg.POST("/agent-ops/:opId/approve", h.Approve)
+	rg.POST("/agent-ops/:opId/reject", h.Reject)
 }
 
 // Get godoc
@@ -184,4 +197,84 @@ func (h *AgentOpHandler) Stream(c *gin.Context) {
 			}
 		}
 	}
+}
+
+// ListAll godoc
+// @Summary List agent ops across all targets (platform scope)
+// @Description Platform-level ledger listing; optional `status` filter (e.g. pending_approval for the approval center). Newest first, paged.
+// @Tags agent-ops
+// @Produce json
+// @Param status query string false "lifecycle status filter"
+// @Success 200 {object} common.Envelope
+// @Router /agent-ops [get]
+func (h *AgentOpHandler) ListAll(c *gin.Context) {
+	p := common.ParsePagination(c)
+	status := c.Query("status")
+	all, err := h.svc.ListByStatus(status)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	total := int64(len(all))
+	start := (p.Page - 1) * p.PageSize
+	if start > len(all) {
+		start = len(all)
+	}
+	end := start + p.PageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	common.OKPaged(c, all[start:end], total, p)
+}
+
+// Approve godoc
+// @Summary Approve a gated upgrade op (platform ops role)
+// @Description Releases a pending_approval upgrade op → queued → dispatched to the live Runner. Requires ops:manage.
+// @Tags agent-ops
+// @Produce json
+// @Param opId path string true "Agent op ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Failure 409 {object} common.Envelope
+// @Router /agent-ops/{opId}/approve [post]
+func (h *AgentOpHandler) Approve(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("opId"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	approver, _ := middleware.CurrentSubject(c)
+	if err := h.svc.ApproveUpgrade(id, approver); err != nil {
+		common.AbortWithError(c, err)
+		return
+	}
+	common.OK(c, gin.H{"id": id.String(), "status": models.AgentOpQueued})
+}
+
+// Reject godoc
+// @Summary Reject a gated upgrade op (platform ops role)
+// @Description Closes a pending_approval upgrade op without dispatching it. Optional JSON body {reason}. Requires ops:manage.
+// @Tags agent-ops
+// @Produce json
+// @Param opId path string true "Agent op ID (UUID)"
+// @Success 200 {object} common.Envelope
+// @Failure 404 {object} common.Envelope
+// @Failure 409 {object} common.Envelope
+// @Router /agent-ops/{opId}/reject [post]
+func (h *AgentOpHandler) Reject(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("opId"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	rejector, _ := middleware.CurrentSubject(c)
+	if err := h.svc.RejectUpgrade(id, body.Reason, rejector); err != nil {
+		common.AbortWithError(c, err)
+		return
+	}
+	common.OK(c, gin.H{"id": id.String(), "status": models.AgentOpFailed})
 }

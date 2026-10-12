@@ -32,6 +32,7 @@ type AgentOpStore interface {
 	ListQueuedByTarget(targetID uuid.UUID) ([]models.AgentOp, error)
 	// Upgrade/install reconciliation lookups (INSTALL-UPGRADE-EXECUTOR-DESIGN §4.2).
 	ListByTargetStatusType(targetID uuid.UUID, status, opType string) ([]models.AgentOp, error)
+	ListByStatus(status string) ([]models.AgentOp, error)
 	ListTargetsWithRunningUpgrades() ([]uuid.UUID, error)
 }
 
@@ -67,10 +68,12 @@ func (s *AgentOpService) SetDispatcher(d OpDispatcher) { s.dispatcher = d }
 // SetStream wires the SSE fan-out hub (optional — nil simply skips publishing).
 func (s *AgentOpService) SetStream(st *OpStream) { s.stream = st }
 
-// Create validates and persists an operation, then hands exec ops to the
-// dispatcher. Op type is the only caller-controlled enum; status always
-// starts at queued. A dispatch failure (offline target) is NOT a request
-// failure: the 202 handle stands and the op drains on Runner connect.
+// Create validates and persists an operation, then hands dispatchable ops to
+// the dispatcher. Op type is the only caller-controlled enum; status starts at
+// queued for exec/install, but upgrade is gated behind human approval (B4):
+// it starts at pending_approval and only reaches queued after ApproveUpgrade.
+// A dispatch failure (offline target) is NOT a request failure: the 202 handle
+// stands and the op drains on Runner connect.
 func (s *AgentOpService) Create(op *models.AgentOp) error {
 	if !models.IsValidAgentOpType(op.OpType) {
 		return common.ErrBadRequest.WithError(fmt.Errorf("unknown agent op type %q", op.OpType))
@@ -78,7 +81,12 @@ func (s *AgentOpService) Create(op *models.AgentOp) error {
 	if op.TargetID == uuid.Nil {
 		return common.ErrBadRequest.WithError(fmt.Errorf("agent op requires a target"))
 	}
-	op.Status = models.AgentOpQueued
+	if op.OpType == models.AgentOpUpgrade {
+		// 高危自升级：先入审批闸，批准后才进入可派发状态（B4）。
+		op.Status = models.AgentOpPendingApproval
+	} else {
+		op.Status = models.AgentOpQueued
+	}
 	if err := s.repo.Create(op); err != nil {
 		return err
 	}
@@ -86,18 +94,95 @@ func (s *AgentOpService) Create(op *models.AgentOp) error {
 	return nil
 }
 
-// tryDispatch best-effort pushes the op to the target's Runner. Only exec is
-// dispatched (§16.5 裁定)：install/upgrade 的执行器依赖 §9.9 bootstrap 流程
-// （enroll-token 凭据流转给尚无 runner 的目标），独立特性，留守 queued。
+// tryDispatch best-effort pushes the op to the target's Runner. exec and
+// upgrade are dispatchable (§16.5 裁定 + INSTALL-UPGRADE-EXECUTOR-DESIGN）：
+// upgrade 在 §9.9 引导执行器落定后已可经网关直推在线 runner（升级 Job 在
+// 现役 runner 上跑，不依赖 enroll bootstrap）。install 仍留守 queued —— 它
+// 经 enroll 对账完成，不靠派发。pending_approval 的 upgrade 不在此派发（须先
+// 审批）。
 func (s *AgentOpService) tryDispatch(op *models.AgentOp) {
-	if s.dispatcher == nil || op.OpType != models.AgentOpExec {
+	if s.dispatcher == nil {
 		return
+	}
+	if op.Status != models.AgentOpQueued {
+		return // 仅 queued 可派发；pending_approval / 终态都不动
+	}
+	if op.OpType != models.AgentOpExec && op.OpType != models.AgentOpUpgrade {
+		return // install 留守 queued
 	}
 	if err := s.dispatcher.Dispatch(op); err != nil {
 		// Offline target is the common, expected case; anything else is
 		// logged so a wiring bug cannot silently strand ops as queued.
 		applog.Infof("agentop: dispatch deferred for op %s (%s): %v", op.ID, op.OpType, err)
 	}
+}
+
+// ApproveUpgrade releases a gated upgrade op: pending_approval → queued, then
+// dispatched to the live Runner. Only ops in pending_approval may be approved;
+// anything else is a 409 (the op has already moved on or was never gated).
+func (s *AgentOpService) ApproveUpgrade(opID uuid.UUID, approver string) error {
+	op, err := s.repo.GetByID(opID)
+	if err != nil {
+		return err
+	}
+	if op.Status != models.AgentOpPendingApproval {
+		return common.NewAPIError(common.KindTarget, http.StatusConflict, 92,
+			"Agent Op Not Pending Approval").WithError(
+			fmt.Errorf("op %s 状态为 %s，非待审批", opID, op.Status))
+	}
+	msg := "approved"
+	if approver != "" {
+		msg = "approved by " + approver
+	}
+	if err := s.repo.UpdateStatus(op.ID, models.AgentOpPendingApproval, models.AgentOpQueued, msg); err != nil {
+		return err
+	}
+	op.Status = models.AgentOpQueued
+	s.tryDispatch(op) // 现在 upgrade 在 queued 下可派发（修 §16.5 死锁）
+	return nil
+}
+
+// RejectUpgrade closes a gated upgrade op without dispatching it:
+// pending_approval → failed. The reason (if any) is stamped onto the ledger
+// row so the rejection is auditable.
+func (s *AgentOpService) RejectUpgrade(opID uuid.UUID, reason, rejector string) error {
+	op, err := s.repo.GetByID(opID)
+	if err != nil {
+		return err
+	}
+	if op.Status != models.AgentOpPendingApproval {
+		return common.NewAPIError(common.KindTarget, http.StatusConflict, 92,
+			"Agent Op Not Pending Approval").WithError(
+			fmt.Errorf("op %s 状态为 %s，非待审批", opID, op.Status))
+	}
+	msg := "rejected"
+	if rejector != "" {
+		msg = "rejected by " + rejector
+	}
+	if reason != "" {
+		msg += ": " + reason
+	}
+	return s.repo.UpdateStatus(op.ID, models.AgentOpPendingApproval, models.AgentOpFailed, msg)
+}
+
+// SweepApprovalTimeouts auto-rejects upgrade ops stranded in pending_approval
+// longer than maxAge (B-11 审批超时语义复用）：无人审批的高危自升级不应无限
+// 悬挂，也不应静默放行 —— 一律判 failed 并留痕。CreatedAt 即入闸时刻。
+func (s *AgentOpService) SweepApprovalTimeouts(ctx context.Context, maxAge time.Duration) error {
+	ops, err := s.repo.ListByStatus(models.AgentOpPendingApproval)
+	if err != nil {
+		return err
+	}
+	for i := range ops {
+		if time.Since(ops[i].CreatedAt) <= maxAge {
+			continue
+		}
+		if err := s.repo.UpdateStatus(ops[i].ID, models.AgentOpPendingApproval,
+			models.AgentOpFailed, "approval timeout after "+maxAge.String()); err != nil {
+			applog.Infof("agentop: approval timeout sweep failed for op %s: %v", ops[i].ID, err)
+		}
+	}
+	return nil
 }
 
 // ReconcileInstall closes queued install ops by enrollment evidence
@@ -245,6 +330,13 @@ func (s *AgentOpService) publishOp(op *models.AgentOp) {
 
 func (s *AgentOpService) Get(id uuid.UUID) (*models.AgentOp, error) {
 	return s.repo.GetByID(id)
+}
+
+// ListByStatus returns every op (any target) in one lifecycle status — the
+// platform approval-center listing and the approval-timeout sweep both read
+// the full table by status.
+func (s *AgentOpService) ListByStatus(status string) ([]models.AgentOp, error) {
+	return s.repo.ListByStatus(status)
 }
 
 func (s *AgentOpService) ListByTarget(targetID uuid.UUID, p common.Pagination) ([]models.AgentOp, int64, error) {

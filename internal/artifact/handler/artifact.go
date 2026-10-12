@@ -3,10 +3,12 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/repository"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/service"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/storage"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
@@ -31,6 +33,10 @@ func (h *ArtifactHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	// consume init 容器用它在流水线任务间搬运产物。
 	rg.POST("/artifacts/storage-url", h.StorageURL)
 	rg.DELETE("/artifacts/:id", h.Delete)
+	// §6.2 跨组件检索（服务树第二视图数据源）。
+	rg.GET("/artifacts", h.Search)
+	// S-2 裁定的双通道「推」端点：外部扫描器回写安全字段。
+	rg.POST("/artifacts/:id/scan-result", h.ScanResult)
 }
 
 func (h *ArtifactHandler) ListByComponent(c *gin.Context) {
@@ -141,4 +147,91 @@ func (h *ArtifactHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// Search godoc
+//
+//	@Summary	跨组件制品检索（§6.2）
+//	@Produce	json
+//	@Param		version		query	string	false	"版本子串"
+//	@Param		name		query	string	false	"storage key 子串"
+//	@Param		componentId	query	string	false	"限定组件"
+//	@Param		type		query	string	false	"image/binary/archive/generic"
+//	@Param		since		query	string	false	"RFC3339 下界"
+//	@Param		until		query	string	false	"RFC3339 上界"
+//	@Param		scanStatus	query	string	false	"unscanned/scanning/scanned"
+//	@Param		signed		query	string	false	"true/false"
+//	@Success	200			{object}	common.Envelope
+//	@Router		/artifacts [get]
+func (h *ArtifactHandler) Search(c *gin.Context) {
+	f := repository.ArtifactSearchFilter{}
+	f.Version = c.Query("version")
+	f.Name = c.Query("name")
+	f.ArtifactType = c.Query("type")
+	f.ScanStatus = c.Query("scanStatus")
+	if v := c.Query("componentId"); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			common.Fail(c, http.StatusBadRequest, err)
+			return
+		}
+		f.ComponentID = id
+	}
+	parseTime := func(key string) (*time.Time, error) {
+		v := c.Query(key)
+		if v == "" {
+			return nil, nil
+		}
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return nil, err
+		}
+		return &t, nil
+	}
+	var err error
+	if f.Since, err = parseTime("since"); err != nil {
+		common.Fail(c, http.StatusBadRequest, errors.New("since 须为 RFC3339"))
+		return
+	}
+	if f.Until, err = parseTime("until"); err != nil {
+		common.Fail(c, http.StatusBadRequest, errors.New("until 须为 RFC3339"))
+		return
+	}
+	if v := c.Query("signed"); v != "" {
+		b := v == "true"
+		f.Signed = &b
+	}
+	p := common.ParsePagination(c)
+	items, total, err := h.svc.Search(f, p)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OKPaged(c, items, total, p)
+}
+
+// ScanResult godoc
+//
+//	@Summary	回写制品扫描结果（S-2 双通道推端点）
+//	@Accept		json
+//	@Produce	json
+//	@Param		body	body	service.ScanResultInput	true	"扫描器聚合结果，全量覆盖"
+//	@Success	200		{object}	common.Envelope
+//	@Router		/artifacts/{id}/scan-result [post]
+func (h *ArtifactHandler) ScanResult(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var in service.ScanResultInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.svc.ApplyScanResult(id, in); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	common.OK(c, gin.H{"updated": true})
 }

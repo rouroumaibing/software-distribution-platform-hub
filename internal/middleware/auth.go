@@ -16,6 +16,9 @@ import (
 // claims for downstream middleware/handlers to read via c.Get.
 const contextKeyClaims = "auth.claims"
 
+// patTokenPrefix routes bearer tokens into the PAT verification path (§6.4).
+const patTokenPrefix = "sdp_pat_"
+
 var (
 	errMissingBearer = errors.New("missing bearer token")
 	errWrongClient   = errors.New("token was not issued for this client")
@@ -55,6 +58,15 @@ type AuthConfig struct {
 type Authenticator struct {
 	verifier *oidc.IDTokenVerifier
 	clientID string
+	// patVerifier resolves `sdp_pat_*` bearer tokens (§6.4) to their owner's
+	// subject. Nil = PAT 鉴权未装配（纯 JWT）。
+	patVerifier func(rawToken string) (subject string, err error)
+}
+
+// SetPATVerifier wires §6.4 PAT verification. The verifier MUST fail-closed
+// on unknown / revoked / expired tokens.
+func (a *Authenticator) SetPATVerifier(fn func(rawToken string) (subject string, err error)) {
+	a.patVerifier = fn
 }
 
 // NewAuthenticator fetches the realm's OIDC discovery document once at
@@ -87,6 +99,20 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 		if !ok || rawToken == "" {
 			common.Fail(c, http.StatusUnauthorized, errMissingBearer)
 			c.Abort()
+			return
+		}
+
+		// §6.4：PAT 走独立校验链（哈希查表，不经 Keycloak）。以属主身份注入
+		// claims —— RBAC 按 subject 绑定照常生效，Groups 为空。
+		if strings.HasPrefix(rawToken, patTokenPrefix) && a.patVerifier != nil {
+			subject, verr := a.patVerifier(rawToken)
+			if verr != nil {
+				common.Fail(c, http.StatusUnauthorized, verr)
+				c.Abort()
+				return
+			}
+			c.Set(contextKeyClaims, keycloakClaims{Subject: subject, AuthorizedParty: a.clientID})
+			c.Next()
 			return
 		}
 

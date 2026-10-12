@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	_ "net/http/pprof" // registers pprof handlers on http.DefaultServeMux
 	"os"
@@ -23,7 +24,9 @@ import (
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/platform"
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
 
 	artifacthandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/handler"
@@ -183,6 +186,14 @@ func main() {
 	catalogSvc := catalogsvc.NewServiceService(catalogRepo, pipelineRunRepo, serviceTreeRepo).WithCascade(cascadeDel)
 	componentSvc := componentsvc.NewComponentService(componentRepo, bindingRepo, componentRoleRepo, pipelineRunRepo).WithCascade(cascadeDel)
 	componentConfigSvc := componentsvc.NewComponentConfigService(componentConfigRepo, envRepo)
+	// 整环境配置版本化（ui-12 §4.1/§4.2 / N-18/N-19）：配置每次变更自动捕获
+	// 快照版本；回滚/对比走 ConfigVersionHandler。
+	configSnapshotRepo := componentrepo.NewConfigSnapshotRepository(gdb)
+	configSnapshotSvc := componentsvc.NewConfigSnapshotService(configSnapshotRepo, componentConfigRepo)
+	componentConfigSvc.AttachSnapshots(configSnapshotSvc)
+	// 共享变量组（ui-12 §5.3 / N-26）：org 级变量组 + 组件绑定；触发时合并。
+	variableGroupRepo := componentrepo.NewVariableGroupRepository(gdb)
+	variableGroupSvc := componentsvc.NewVariableGroupService(variableGroupRepo)
 	targetSvc := targetsvc.NewTargetService(targetRepo)
 	// §9.9 / §9.5 agent operation ledger（exec / install / upgrade）：hub 负责
 	// 校验 + 记账 + 出 202 句柄，执行归 Runner（hub 无 client-go）。
@@ -338,6 +349,9 @@ func main() {
 	// 灰度回流快照存储（RUNNER-REFLUX-SPEC §3 / STATUS #8）：ApplyStatus 收到
 	// Deploy 型任务的 Rollout 摘要 → rollout_runs upsert + step_history 追加。
 	runSvc.SetRolloutStore(rolloutRunRepo)
+	// run↔environment 反规范化（ui-12 §5.1 环境覆盖档 / §6.3 配额 org 维度）：
+	// 触发时按 (component, target, namespace) 唯一命中解析环境，落 run 行。
+	runSvc.SetEnvironmentMetaStore(&environmentMetaResolver{envRepo: envRepo})
 	// 身份帧（RUNNER-REFLUX-SPEC §5 / STATUS #2）：写 targets.agent_version；
 	// 若该目标存在 running 的 upgrade op 且上报版本与目标一致 → 对账到 succeeded
 	// （INSTALL-UPGRADE-EXECUTOR-DESIGN §2.2，WS 中断是升级的预期行为，对账在 hub）。
@@ -408,6 +422,11 @@ func main() {
 				if err := agentOpSvc.SweepUpgradeTimeouts(ctx, 15*time.Minute); err != nil {
 					applog.Infof("agentop: upgrade timeout sweep: %v", err)
 				}
+				// B4 审批超时回收（B-11 语义复用）：pending_approval 的 upgrade
+				// op 超过 24h 无人审批 → 自动判 failed，不静默悬挂也不静默放行。
+				if err := agentOpSvc.SweepApprovalTimeouts(ctx, 24*time.Hour); err != nil {
+					applog.Infof("agentop: approval timeout sweep: %v", err)
+				}
 			}
 		}
 	}()
@@ -421,16 +440,37 @@ func main() {
 	runSvc.SetProductionPolicy(envRepo)
 	// G-2：任务 Succeeded 时把 Produces 键登记进制品库（ApplyStatus 回调）。
 	runSvc.SetArtifactRegistrar(artifactSvc)
+	// N-26 变量分层解析：触发参数 = 声明默认 < 变量组 < 组件变量 < 运行输入。
+	runSvc.SetVarSource(runVarSource{
+		componentConfigRepo: componentConfigRepo,
+		variableGroups:      variableGroupSvc,
+	})
 	// G-1：注入执行 Job 的 ServiceAccount（runner 侧幂等 ensure SA+RBAC）。
 	runSvc.SetJobServiceAccount(cfg.JobServiceAccount)
 	// B-11 审批超时：把超过任务时限仍未决策的审批自动拒绝（用户故事 Epic 8）。
 	go runSvc.RunApprovalTimeouts(ctx, cfg.ApprovalTimeoutInterval)
 
+	// --- 触发器（ui-12 §4.3 / N-21）：cron 调度 + webhook + run.finished 事件 ---
+	triggerRepo := pipelinerepo.NewTriggerRepository(gdb)
+	triggerSvc := pipelinesvc.NewTriggerService(triggerRepo, gdb, runSvc)
+	// run.finished 首版 = 函数调用无总线：终态落库后同步评估 event 触发器。
+	runSvc.SetRunFinishedHook(triggerSvc.EvaluateRunFinished)
+	// 内建 cron 调度器：每分钟 tick，FOR UPDATE SKIP LOCKED 抢占防多副本重复触发。
+	triggerSvc.StartScheduler(ctx, cfg.TriggerTickInterval)
+
+	// 审批策略（ui-12 §5.1 / 决策 #4）：组件默认 + 环境覆盖；审批中心三视图。
+	runSvc.SetApprovalPolicyStore(approvalRepo)
+	approvalCenterHandler := runhandler.NewApprovalCenterHandler(runSvc)
+
 	// --- handlers -----------------------------------------------------------
 	orgHandler := orghandler.NewOrgHandler(orgSvc)
 	catalogHandler := cataloghandler.NewServiceHandler(catalogSvc)
 	componentHandler := componenthandler.NewComponentHandler(componentSvc)
+	// §6.1 依赖图（服务树治理）：声明/解除/双向列表，环在写入时拒绝。
+	dependencySvc := componentsvc.NewDependencyService(componentrepo.NewDependencyRepository(gdb), componentSvc)
 	componentConfigHandler := componenthandler.NewComponentConfigHandler(componentConfigSvc)
+	configVersionHandler := componenthandler.NewConfigVersionHandler(configSnapshotSvc)
+	variableGroupHandler := componenthandler.NewVariableGroupHandler(variableGroupSvc)
 	targetHandler := targethandler.NewTargetHandler(targetSvc)
 	// 接入编排（§9.9）：install/upgrade 取版本矩阵里的 runner 版本。
 	targetHandler.SetAgentOps(agentOpSvc, cfg.PackageVersionRunner)
@@ -443,6 +483,7 @@ func main() {
 	stageHandler := pipelinehandler.NewStageHandler(stageSvc)
 	taskTemplateHandler := pipelinehandler.NewTaskTemplateHandler(taskTemplateSvc)
 	pipelineVersionHandler := pipelinehandler.NewPipelineVersionHandler(versionSvc)
+	triggerHandler := pipelinehandler.NewTriggerHandler(triggerSvc)
 	artifactHandler := artifacthandler.NewArtifactHandler(artifactSvc)
 	roleHandler := permhandler.NewRoleHandler(roleSvc)
 	componentRoleHandler := permhandler.NewComponentRoleHandler(componentRoleSvc)
@@ -458,6 +499,9 @@ func main() {
 
 	// --- auth (optional) ----------------------------------------------------
 	var auth *middleware.Authenticator
+	// §6.4 PAT：无论鉴权开关都先建好 service —— 令牌管理端点走 scoped 组
+	// （dev 模式裸挂，与全部管理面同口径），PAT 校验链仅在开鉴权时有意义。
+	patSvc := permissionsvc.NewPATService(permbrepo.NewPATRepository(gdb))
 	if cfg.AuthDisabled() {
 		applog.Info("hub: auth disabled (no KEYCLOAK_ISSUER set) — dev mode")
 	} else {
@@ -468,6 +512,14 @@ func main() {
 		if err != nil {
 			applog.Fatalf("hub: failed to init authenticator: %v", err)
 		}
+		// PAT bearer（sdp_pat_ 前缀）→ 哈希查表，以属主身份放行。
+		auth.SetPATVerifier(func(rawToken string) (string, error) {
+			row, verr := patSvc.Verify(rawToken)
+			if verr != nil {
+				return "", verr
+			}
+			return row.Subject, nil
+		})
 	}
 
 	// --- router -------------------------------------------------------------
@@ -500,8 +552,11 @@ func main() {
 	api.Use(middleware.UserContext())
 	// AuditMiddleware is the single cross-cutting writer for mutating requests
 	// (§6). It runs after UserContext so the subject is resolved, and wraps
-	// every route so business code never writes audit rows itself.
-	api.Use(middleware.AuditMiddleware(auditReporter))
+	// every route so business code never writes audit rows itself. The
+	// locator denormalizes the owning component onto each row (ui-12 5.4
+	// 组件级审计下沉) — components are their own owner, pipelines/runs resolve
+	// through the same ComponentLocator the RBAC guards use.
+	api.Use(middleware.AuditMiddleware(auditReporter, permissionsvc.NewComponentLocator(pipelineRepo, pipelineRunRepo)))
 
 	// Org / target / catalog / component management — no component-scoped
 	// permission check in this M1 wiring.
@@ -511,6 +566,8 @@ func main() {
 	catalogHandler.RegisterRoutes(api)
 	componentHandler.RegisterRoutes(api)
 	componentConfigHandler.RegisterRoutes(api)
+	configVersionHandler.RegisterRoutes(api)
+	variableGroupHandler.RegisterRoutes(api)
 	envHandler.RegisterRoutes(api)
 	credHandler.RegisterRoutes(api)
 	envGroupHandler.RegisterRoutes(api)
@@ -534,6 +591,17 @@ func main() {
 	}
 	permhandler.NewPlatformRoleHandler(platformRoleSvc).RegisterRoutes(platformGroup)
 	permhandler.NewPlatformRoleBindingHandler(platformBindingSvc).RegisterRoutes(platformGroup)
+	// §5.1 变更窗口 / §6.3 平台设置（平台级 KV）：读挂在平台组同权限；
+	// 变更窗口的**执行**在 runSvc 触发闸门（下方 SetChangeWindowGuard）。
+	platformSettingStore := platform.NewGormSettingStore(gdb)
+	platformHandler := platform.NewHandler(platformSettingStore)
+	platformGroup.GET("/platform/settings/change-window", platformHandler.GetChangeWindow)
+	platformGroup.PUT("/platform/settings/change-window", platformHandler.PutChangeWindow)
+	// §6.3 平台运维视图（只读聚合）：Runner 状态 / 平台健康 / 用量。
+	opsHandler := platform.NewOpsHandler(gdb, cfg.PackageVersionHub)
+	platformGroup.GET("/ops/runners", opsHandler.GetRunners)
+	platformGroup.GET("/ops/health", opsHandler.GetHealth)
+	platformGroup.GET("/ops/quota", opsHandler.GetQuota)
 	// 组织删除是高危平台级动作（org/service Delete 的 TODO「平台级管理员权限校验」）：
 	// 读/建/改仍挂裸 api，仅 DELETE 收到本组，开鉴权后要求平台级 user:manage。
 	orgHandler.RegisterAdminRoutes(platformGroup)
@@ -543,10 +611,25 @@ func main() {
 	resourceOwnershipHandler.RegisterRoutes(platformGroup)
 	roleMappingHandler.RegisterRoutes(platformGroup)
 	permRequestHandler.RegisterRoutes(platformGroup)
-	// STATUS #19：审计日志读端点。audit_log 覆盖全平台操作留痕，读它 =
-	// 读到所有主体的变更记录 —— 必须与 /platform-roles 同组，开鉴权后过
-	// RequirePlatformPermission(user:manage)；写入仍由 AuditMiddleware 独占。
-	permhandler.NewAuditLogHandler(auditRepo).RegisterRoutes(platformGroup)
+	// STATUS #19 + ui-12 5.4 组件级审计下沉（2026-10-11 拍板）：审计读端点
+	// 双通道 —— 平台管理员（user:manage）全量可查；组件管理员（component:
+	// manage）须携带 ?componentId= 且查询被 handler 强制钳到该组件。
+	// RequireAuditAccess 中间件 + handler 过滤双保险；写入仍由
+	// AuditMiddleware 独占。
+	auditGroup := api.Group("/")
+	if auth != nil {
+		auditGroup.Use(middleware.RequireAuditAccess(bindingSvc, bindingSvc))
+	}
+	permhandler.NewAuditLogHandler(auditRepo).RegisterRoutes(auditGroup)
+	// B4 平台自升级审批流（2026-10-12 拍板完整版）：upgrade op 入审批闸，
+	// 审批/拒绝是平台级运维动作，要求持有 ops:manage（种子 sdp-admin 已含）。
+	// 读侧（GET /agent-ops 列表、GET /targets/:id/agent-ops、台账 SSE）挂在
+	// 裸 api（与既有 agentOpHandler.RegisterRoutes 一致）；写侧审批动作挂本组。
+	agentOpApprovalGroup := api.Group("/")
+	if auth != nil {
+		agentOpApprovalGroup.Use(middleware.RequirePlatformPermission(bindingSvc, permmodels.ActionOpsManage))
+	}
+	agentOpHandler.RegisterApprovalRoutes(agentOpApprovalGroup)
 	userInfoHandler.RegisterRoutes(api)
 	searchHandler.RegisterRoutes(api)
 	// §9.10 版本矩阵（CM package-versions → env → 只读端点）。
@@ -581,10 +664,51 @@ func main() {
 	// List 响应带 unreadCount（服务端时钟），read-mark 只前进不回退。
 	notificationSvc := notification.New(approvalRepo, pipelineRunRepo)
 	notificationSvc.SetReadStore(notification.NewReadStore(gdb))
+	// §5.2 邮箱订阅（决策 #5 收敛）：SMTP 未配置时挂 NoopMailer —— 订阅端点
+	// 可用、分发为受控 no-op；配置了才真正发信。
+	notificationSvc.SetSubscriptionStore(notification.NewGormSubscriptionStore(gdb))
+	if cfg.SMTPHost != "" && cfg.SMTPFrom != "" {
+		notificationSvc.SetMailer(notification.SMTPMailer{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort, From: cfg.SMTPFrom,
+			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+		})
+		applog.Infof("notify: email channel enabled via %s", cfg.SMTPHost)
+	} else {
+		notificationSvc.SetMailer(notification.NoopMailer{})
+	}
+	// 事件源：run 终态 / 待审批播种 → 按订阅白名单镜像到邮件渠道。
+	runSvc.SetNotifySink(notificationSvc.Dispatch)
+	// §6.1 废弃治理：deprecated 组件禁新触发（历史运行与制品保留）。
+	runSvc.SetComponentGuard(componentLifecycleAdapter{componentSvc})
+	// §5.1 变更窗口闸门：每次触发实时读设置（改配置即时生效，无需重启）。
+	// 窗口外触发 → 409 + 原因（与 B-11 生产强审批同拒绝形状，前端原样渲染）。
+	runSvc.SetChangeWindowGuard(func() error {
+		cw, err := platform.LoadChangeWindow(platformSettingStore)
+		if err != nil {
+			// 读取失败不放也不拦（fail-open）：闸门是"时机管控"，DB 故障
+			// 时把全部触发挡死会放大故障面；err 仍返回上层记日志。
+			applog.Warnf("platform: change window read failed, allowing trigger: %v", err)
+			return nil
+		}
+		if platform.InWindow(cw, time.Now()) {
+			return nil
+		}
+		return common.DomainErrorWithReasons(common.KindPipeline, http.StatusConflict, 6,
+			"outside the change window",
+			fmt.Sprintf("当前不在变更窗口内（%s–%s，星期 %v），触发已被平台变更窗口拦截",
+				cw.Start, cw.End, cw.Weekdays))
+	})
 	notificationHandler := notification.NewHandler(notificationSvc)
 	scoped := api.Group("/")
 	scoped.GET("/notifications", notificationHandler.List)
 	scoped.POST("/notifications/read-mark", notificationHandler.ReadMark)
+	scoped.GET("/notifications/subscription", notificationHandler.GetSubscription)
+	scoped.PUT("/notifications/subscription", notificationHandler.PutSubscription)
+	// §6.4 个人访问令牌：任何登录用户管理自己的令牌（无净新增权限动作）。
+	patHandler := permhandler.NewPATHandler(patSvc)
+	scoped.GET("/me/tokens", patHandler.List)
+	scoped.POST("/me/tokens", patHandler.Create)
+	scoped.DELETE("/me/tokens/:id", patHandler.Revoke)
 	scoped.POST("/pipelines/:id/runs", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.Trigger)...)
 	scoped.GET("/pipelines/:id/runs", wrap(middleware.ResourcePipeline, "id", permmodels.ActionComponentRead, pipelineRunHandler.ListByPipeline)...)
 	// 全局运行列表（运行中心）：跨 pipeline 巡视，支持 ?phase= 过滤。
@@ -595,6 +719,8 @@ func main() {
 	// DATA-MODEL §6.5 确认新增：阶段级进度卡（derive-on-read 聚合）。
 	scoped.GET("/runs/:id/stage-progress", pipelineRunHandler.StageProgress)
 	scoped.GET("/runs/:id/log", pipelineRunHandler.GetLogs)
+	// 运行级日志 SSE（ui-12 §5.5 / N-27）：回放历史 + 轮询增量，run 终态关闭。
+	scoped.GET("/runs/:id/log/stream", pipelineRunHandler.StreamLogs)
 	scoped.GET("/runs/:id/tasks/:name/log", pipelineRunHandler.GetLogs)
 	scoped.POST("/pipelines/:id/runs/:runId/tasks/:taskName/decision", wrap(middleware.ResourcePipeline, "id", permmodels.ActionApprovalApprove, pipelineRunHandler.Approve)...)
 	scoped.POST("/runs/:id/tasks/:name/rollout", pipelineRunHandler.ControlRollout)
@@ -606,8 +732,33 @@ func main() {
 	// 单任务重跑：只重跑某个任务及其下游，不重投整个 run（C-07）。
 	scoped.POST("/runs/:id/tasks/:name/rerun", wrap(middleware.ResourceRun, "id", permmodels.ActionPipelineTrigger, pipelineRunHandler.RerunTask)...)
 
+	// 触发器（ui-12 §4.3 / N-21）：全部 pipeline 作用域，权限经组件归属解析。
+	// cron-preview 挂 triggers 的静态兄弟段（/pipelines/:id/triggers-preview），
+	// 避开与 :triggerId 的通配冲突。
+	scoped.POST("/pipelines/:id/triggers", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineUpdate, triggerHandler.Create)...)
+	scoped.GET("/pipelines/:id/triggers", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineRead, triggerHandler.List)...)
+	scoped.POST("/pipelines/:id/triggers-preview", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineRead, triggerHandler.CronPreview)...)
+	scoped.PUT("/pipelines/:id/triggers/:triggerId", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineUpdate, triggerHandler.Update)...)
+	scoped.DELETE("/pipelines/:id/triggers/:triggerId", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineUpdate, triggerHandler.Delete)...)
+	scoped.POST("/pipelines/:id/triggers/:triggerId/rotate", wrap(middleware.ResourcePipeline, "id", permmodels.ActionPipelineUpdate, triggerHandler.Rotate)...)
+
+	// 审批中心（ui-12 §5.1）：三视图按登录主体过滤，无需资源定位。
+	scoped.GET("/approvals", approvalCenterHandler.List)
+	// 审批策略：读 pipeline:read、写 component:manage（决策 #4 权限矩阵）。
+	scoped.GET("/components/:id/approval-policies", wrap(middleware.ResourceComponent, "id", permmodels.ActionComponentRead, approvalCenterHandler.ListPolicies)...)
+	scoped.PUT("/components/:id/approval-policies", wrap(middleware.ResourceComponent, "id", permmodels.ActionComponentManage, approvalCenterHandler.UpsertPolicy)...)
+	// §6.1 依赖图：声明 / 解除（写）与双向列表（读）。
+	dependencyHandler := componenthandler.NewDependencyHandler(dependencySvc)
+	scoped.POST("/components/:id/dependencies", wrap(middleware.ResourceComponent, "id", permmodels.ActionComponentManage, dependencyHandler.Add)...)
+	scoped.DELETE("/components/:id/dependencies", wrap(middleware.ResourceComponent, "id", permmodels.ActionComponentManage, dependencyHandler.Remove)...)
+	scoped.GET("/components/:id/dependencies", wrap(middleware.ResourceComponent, "id", permmodels.ActionComponentRead, dependencyHandler.List)...)
+
 	// Runner gateway WebSocket endpoint.
 	r.GET(cfg.GatewayPath, gw.ServeWS)
+
+	// Webhook 触发器（ui-12 §4.3）：挂根引擎、 bearer 之外 —— X-Webhook-Token
+	// 即鉴权（与 G5 本地制品下载同一「token 即凭证」模式）。
+	r.POST("/api/v1/webhooks/pipeline-triggers/:triggerId", triggerHandler.WebhookInvoke)
 
 	// Local-driver signed storage routes (G5) — mounted on the root engine,
 	// outside auth middleware: browser downloads carry no Authorization
@@ -692,4 +843,22 @@ func (r *componentMetaResolver) ResolveComponentOrg(pipelineID uuid.UUID) (uuid.
 		return uuid.Nil, uuid.Nil, err
 	}
 	return p.ComponentID, orgID, nil
+}
+
+// environmentMetaResolver implements runsvc.EnvironmentMetaStore: it maps the
+// trigger-time (component, target, namespace) triple to the single matching
+// environment row, so run rows carry environment_id for the 环境覆盖档 approval
+// policy (ui-12 §5.1). Repository errors and ambiguous matches both degrade to
+// ok=false — attribution is best-effort and never blocks a trigger.
+type environmentMetaResolver struct {
+	envRepo *envrepo.EnvironmentRepository
+}
+
+func (r *environmentMetaResolver) UniqueByComponentTargetNamespace(componentID, targetID uuid.UUID, namespace string) (uuid.UUID, bool) {
+	envID, ok, err := r.envRepo.UniqueForComponentTargetNamespace(componentID, targetID, namespace)
+	if err != nil {
+		applog.Warnf("run: environment attribution lookup failed (component=%s target=%s ns=%s): %v", componentID, targetID, namespace, err)
+		return uuid.Nil, false
+	}
+	return envID, ok
 }

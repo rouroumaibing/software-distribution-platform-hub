@@ -52,9 +52,9 @@ func (d *agentOpDispatcher) Dispatch(op *targetmodels.AgentOp) error {
 		// runner — it creates the self-upgrade Job and reports running; the
 		// WS drop is expected and the hub reconciles the terminal state on
 		// the upgraded runner's agent_info frame (main.go SetAgentInfoHandler).
-		// Target must be online; offline keeps the op queued (retry on drain
-		// is moot because a reconnect re-triggers tryDispatch only for exec —
-		// the operator re-issues or the drain hook picks it up).
+		// 仅 queued 的 upgrade 会走到这里（B4 审批闸通过后 pending_approval→queued）；
+		// 离线时 op 留守 queued，目标 Runner 重连经 DrainTarget 再次 tryDispatch
+		// 派发（2026-10-12 修正：tryDispatch 现已对 upgrade 与 exec 同样派发）。
 	default:
 		// install and anything else: stay queued (§9.9 bootstrap flow).
 		return nil

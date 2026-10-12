@@ -7,7 +7,7 @@
 -- 背景:
 --   `stages[].executionMode`（parallel | serial，stage 级）**契约与 DDL 早已拍板**
 --   ——见 hub/API-REFERENCE.md 的字段表、hub/DATA-MODEL.md §6.4-①（那里连 ALTER
---   语句都写好了），console 原型 CONSOLE-UI-原型.html 的阶段头开关也早已实现。
+--   语句都写好了），console 原型 CONSOLE-UI-prototype.html 的阶段头开关也早已实现。
 --   但 hub 的 PipelineStage 结构体一直没有该字段（DATA-MODEL 自己标注
 --   「⚠️ 当前未实现」），于是 console 的阶段「并行/串行」开关无处落库。
 --   本迁移 + 模型字段补齐「存得下、读得回」这一半。

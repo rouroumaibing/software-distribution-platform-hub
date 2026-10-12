@@ -303,6 +303,9 @@ type ApprovalDecisionRequest struct {
 	Approver string `json:"approver,omitempty"`
 	// Reason is free text for the audit trail (stored by the Runner).
 	Reason string `json:"reason,omitempty"`
+	// Ticket links the decision to a change ticket (ui-12 §4.4); it lands on
+	// the hub audit row only (runner-side relay is a registered non-goal).
+	Ticket string `json:"ticket,omitempty"`
 }
 
 // Approve relays an approver's decision for a paused Approval task to the
@@ -347,6 +350,7 @@ func (h *PipelineRunHandler) Approve(c *gin.Context) {
 			approver = sub
 		}
 	}
+	middleware.SetAuditReason(c, req.Reason, req.Ticket)
 
 	if err := h.svc.Approve(c.Request.Context(), pipelineID, runID, taskName, req.Approved, approver); err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)
@@ -362,6 +366,11 @@ type RolloutControlRequest struct {
 	// Operator optionally overrides the identity recorded on the Runner;
 	// defaults to the authenticated user (or the dev user in dev mode).
 	Operator string `json:"operator,omitempty"`
+	// Reason / Ticket are the structured high-risk-operation context (ui-12
+	// §4.4): promote/rollback are gated on a mandatory reason in the console
+	// and both fields land on the hub audit row.
+	Reason string `json:"reason,omitempty"`
+	Ticket string `json:"ticket,omitempty"`
 }
 
 // ControlRollout relays an operator's progressive-delivery command (pause /
@@ -399,6 +408,7 @@ func (h *PipelineRunHandler) ControlRollout(c *gin.Context) {
 			operator = sub
 		}
 	}
+	middleware.SetAuditReason(c, req.Reason, req.Ticket)
 
 	if err := h.svc.ControlRollout(c.Request.Context(), runID, taskName, runnerapi.RolloutAction(req.Action), operator); err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)

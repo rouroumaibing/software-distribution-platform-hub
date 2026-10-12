@@ -3,6 +3,7 @@ package repository
 import (
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
@@ -45,6 +46,16 @@ type AuditQuery struct {
 	Since        time.Time
 	Until        time.Time
 	Limit        int
+	// Ticket matches the structured change-ticket field exactly (ui-12 §4.4);
+	// ReasonContains does a substring match over the free-text reason.
+	Ticket         string
+	ReasonContains string
+	// ComponentID filters on the denormalized component attribution (ui-12
+	// 5.4 组件级审计下沉). Nil = no filter. Rows written before attribution
+	// landed (or unresolvable ones) carry component_id IS NULL and are
+	// invisible to component-scoped queries — by design, they contain
+	// platform-wide context a component admin must not see.
+	ComponentID *uuid.UUID
 }
 
 // Query returns audit rows newest-first under the given filters. The limit is
@@ -69,6 +80,15 @@ func (r *AuditLogRepository) Query(q AuditQuery) ([]models.AuditLog, error) {
 	}
 	if !q.Until.IsZero() {
 		stmt = stmt.Where("timestamp <= ?", q.Until)
+	}
+	if q.Ticket != "" {
+		stmt = stmt.Where("ticket = ?", q.Ticket)
+	}
+	if q.ReasonContains != "" {
+		stmt = stmt.Where("reason ILIKE ?", "%"+q.ReasonContains+"%")
+	}
+	if q.ComponentID != nil {
+		stmt = stmt.Where("component_id = ?", *q.ComponentID)
 	}
 	limit := q.Limit
 	if limit <= 0 {

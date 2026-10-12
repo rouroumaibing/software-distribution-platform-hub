@@ -133,6 +133,15 @@ func (s *ComponentService) ListByService(serviceID uuid.UUID, p common.Paginatio
 }
 
 func (s *ComponentService) Update(id uuid.UUID, c *models.Component) error {
+	// §6.1 治理字段：lifecycle 枚举校验（active/frozen/deprecated）。
+	if c.Lifecycle == "" {
+		c.Lifecycle = models.LifecycleActive
+	}
+	if !models.ValidLifecycle(c.Lifecycle) {
+		return common.DomainErrorWithReasons(common.KindComponent, http.StatusBadRequest, 4,
+			"invalid lifecycle",
+			fmt.Sprintf("lifecycle %q 非法（可选 active/frozen/deprecated）", c.Lifecycle))
+	}
 	c.ID = id
 	return s.repo.Update(c)
 }

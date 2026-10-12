@@ -43,6 +43,7 @@ const (
 	ActionPageSettingsView    = "page:settings:view"
 	ActionOrgManage           = "org:manage"
 	ActionUserManage          = "user:manage"
+	ActionOpsManage           = "ops:manage" // 平台接入运维（目标/自升级审批等）
 )
 
 // Role is either a system-wide built-in (OrgID == nil: Viewer/Editor/Admin)

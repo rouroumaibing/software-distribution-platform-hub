@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,6 +113,9 @@ type TargetStore interface {
 type LogStore interface {
 	Append(*models.TaskRunLog) error
 	ListByRunTask(runID uuid.UUID, taskName string, p common.Pagination) ([]models.TaskRunLog, int64, error)
+	// ListRunTail feeds the run-level SSE cursor (ui-12 §5.5)：run 全任务的
+	// created_at 游标增量。Tests 用不上的 fake 只需返回空。
+	ListRunTail(runID uuid.UUID, since time.Time, limit int) ([]models.TaskRunLog, error)
 }
 
 // PipelineApprovalStore is the persistence surface over pipeline_approvals
@@ -124,6 +128,8 @@ type PipelineApprovalStore interface {
 	ListByRun(runID uuid.UUID) ([]models.PipelineApproval, error)
 	// ListPending feeds the approval-timeout sweeper (B-11 审批超时).
 	ListPending(limit int) ([]models.PipelineApproval, error)
+	// ListCenter serves the approval center's three views (ui-12 §5.1).
+	ListCenter(view, subject string, limit int) ([]models.PipelineApproval, error)
 }
 
 // ComponentMetaStore resolves a pipeline's owning component + org, used to
@@ -132,14 +138,25 @@ type ComponentMetaStore interface {
 	ResolveComponentOrg(pipelineID uuid.UUID) (componentID, orgID uuid.UUID, err error)
 }
 
+// EnvironmentMetaStore resolves the environment a run binds to, from the
+// trigger-time (component, target, namespace) triple. ok=false = absent or
+// ambiguous — the run row stays environment-less (fail-open; ui-12 §5.1
+// 环境覆盖档的执行前提：run 行反规范化 environment_id).
+type EnvironmentMetaStore interface {
+	UniqueByComponentTargetNamespace(componentID, targetID uuid.UUID, namespace string) (envID uuid.UUID, ok bool)
+}
+
 // PipelineRunService intentionally does NOT satisfy common.CRUDService —
 // a run isn't created from arbitrary user JSON (it's assembled server-side
 // from a Pipeline's current stages/tasks + target), and Delete
 // isn't a normal operation on history. Handler wires these methods by hand.
 type PipelineRunService struct {
-	repo             PipelineRunStore
-	taskRepo         TaskRunStore
-	pipelineRepo     PipelineDefStore
+	repo         PipelineRunStore
+	taskRepo     TaskRunStore
+	pipelineRepo PipelineDefStore
+	// varSource supplies the component-variable tiers of the trigger-time
+	// param resolution (ui-12 §5.3 / N-26); nil disables them (tests).
+	varSource        VarSource
 	stageRepo        StageStore
 	taskTemplateRepo TaskTemplateStore
 	targetSvc        TargetStore
@@ -148,11 +165,35 @@ type PipelineRunService struct {
 	logRepo          LogStore
 	approvalRepo     PipelineApprovalStore
 	componentMeta    ComponentMetaStore
+	environmentMeta  EnvironmentMetaStore
 
 	// productionPolicy is the optional 生产强审批 guard (B-11). Wired with a
 	// setter so the constructor signature — and every existing test fixture —
 	// stays unchanged; nil means "no platform-level production policy".
 	productionPolicy ProductionPolicy
+
+	// finishedHook is the optional run.finished event sink (ui-12 §4.3 /
+	// N-21 事件触发首版：函数调用，无总线). Wired with a setter; called
+	// best-effort after a terminal phase lands — trigger failures must not
+	// poison the status write path.
+	finishedHook func(pipelineID uuid.UUID, phase string)
+
+	// notifySink is the optional §5.2 邮件订阅分发口：终态/待审批事件镜像到
+	// 订阅者的邮件渠道。Best-effort，与 finishedHook 同等地位。
+	notifySink func(evt, subject, title, body string)
+
+	// changeWindowGuard is the optional §5.1 变更窗口闸门：非 nil 时在
+	// Trigger 入口调用，返回非 nil 即拒绝（409 + 原因）。实现在 main 装配层
+	// （读 platform_settings），service 层保持无平台表依赖。
+	changeWindowGuard func() error
+
+	// componentGuard is the optional §6.1 治理守卫：deprecated 组件禁新触发
+	// （保留历史运行）。Nil = 无治理约束（旧库未迁移时放行）。
+	componentGuard ComponentGuard
+
+	// approvalPolicyStore is the optional 审批策略 store (ui-12 §5.1);
+	// nil = 无策略，审批回退「任意审批人」。
+	approvalPolicyStore ApprovalPolicyStore
 
 	// artifactRegistry (G-2) registers a task's Produces keys with the
 	// artifact store when the task reaches Succeeded. Setter-wired like
@@ -184,6 +225,11 @@ type RolloutSnapshotStore interface {
 // SetRolloutStore wires the reflux snapshot store (main wires the concrete
 // repository). Safe to leave unset in tests.
 func (s *PipelineRunService) SetRolloutStore(st RolloutSnapshotStore) { s.rolloutStore = st }
+
+// SetEnvironmentMetaStore wires the run↔environment resolver (main wires an
+// adapter over the environment repository). Nil (default) leaves run rows
+// without environment attribution — the 环境覆盖档 then never applies.
+func (s *PipelineRunService) SetEnvironmentMetaStore(st EnvironmentMetaStore) { s.environmentMeta = st }
 
 func NewPipelineRunService(
 	repo PipelineRunStore,
@@ -219,6 +265,13 @@ func NewPipelineRunService(
 // every listed environment (one independent PipelineRun per target); otherwise
 // a single run is created on the auto/selected target.
 func (s *PipelineRunService) Trigger(pipelineID uuid.UUID, req *models.TriggerRequest) ([]*models.PipelineRun, error) {
+	// §5.1 变更窗口（平台级特性开关）：开启后仅允许窗口内触发。所有来源
+	// （manual/cron/webhook/event）同口径 —— 窗口挡的是"变更时机"，不分渠道。
+	if s.changeWindowGuard != nil {
+		if err := s.changeWindowGuard(); err != nil {
+			return nil, err
+		}
+	}
 	if len(req.TargetIDs) > 0 {
 		return s.triggerFanout(pipelineID, req)
 	}
@@ -242,7 +295,7 @@ func (s *PipelineRunService) Trigger(pipelineID uuid.UUID, req *models.TriggerRe
 	if ns == "" {
 		ns = "sdp-run"
 	}
-	paramsJSON, err := json.Marshal(req.Params)
+	paramsJSON, err := json.Marshal(s.triggerParams(p, req.Params))
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +334,7 @@ func (s *PipelineRunService) triggerFanout(pipelineID uuid.UUID, req *models.Tri
 	if ns == "" {
 		ns = "sdp-run"
 	}
-	paramsJSON, err := json.Marshal(req.Params)
+	paramsJSON, err := json.Marshal(s.triggerParams(p, req.Params))
 	if err != nil {
 		return nil, err
 	}
@@ -312,6 +365,26 @@ func (s *PipelineRunService) createRun(pipelineID, targetID uuid.UUID, spec *run
 		PipelineVersion: version,
 		Phase:           runnerapi.PipelineRunPending,
 		TriggeredBy:     req.TriggeredBy,
+		TriggerSource:   triggerSourceOf(req),
+	}
+	// 反规范化归属（ui-12 §5.1 环境覆盖档 / §6.3 配额 org 维度，best-effort）：
+	// org 沿 pipeline→component 解析；环境按 (component, target, namespace)
+	// 唯一命中解析。解析失败/歧义只落空值不挡触发；解析结果复用于下方审批
+	// 播种，避免二次查询。
+	var componentID, orgID uuid.UUID
+	haveMeta := false
+	if s.componentMeta != nil {
+		if cid, oid, err := s.componentMeta.ResolveComponentOrg(pipelineID); err != nil {
+			applog.Warnf("run: cannot resolve component/org for pipeline %s: %v", pipelineID, err)
+		} else {
+			componentID, orgID, haveMeta = cid, oid, true
+			run.OrgID = &oid
+		}
+	}
+	if haveMeta && s.environmentMeta != nil {
+		if envID, ok := s.environmentMeta.UniqueByComponentTargetNamespace(componentID, targetID, ns); ok {
+			run.EnvironmentID = &envID
+		}
 	}
 	if err := s.repo.Create(run); err != nil {
 		return nil, err
@@ -338,9 +411,8 @@ func (s *PipelineRunService) createRun(pipelineID, targetID uuid.UUID, spec *run
 	// component/org can't be resolved we skip the hub record and fall back
 	// to broker-only gating rather than failing the trigger.
 	if s.approvalRepo != nil && s.componentMeta != nil {
-		componentID, orgID, merr := s.componentMeta.ResolveComponentOrg(run.PipelineID)
-		if merr != nil {
-			applog.Warnf("run: cannot resolve component/org for pipeline %s, skipping hub approval records: %v", run.PipelineID, merr)
+		if !haveMeta {
+			applog.Warnf("run: cannot resolve component/org for pipeline %s, skipping hub approval records", run.PipelineID)
 		} else {
 			for _, t := range spec.Tasks {
 				if t.Type != runnerapi.TaskTypeApproval {
@@ -354,13 +426,31 @@ func (s *PipelineRunService) createRun(pipelineID, targetID uuid.UUID, spec *run
 				pa := &models.PipelineApproval{
 					OrgID:       orgID,
 					RunID:       run.ID,
+					PipelineID:  run.PipelineID,
 					TaskRunID:   &tr.ID,
 					ComponentID: componentID,
 					Status:      "Pending",
 					RequestedBy: run.TriggeredBy,
 				}
+				// 策略指派（ui-12 §5.1）：环境覆盖档优先、组件默认兜底，命中
+				// 策略时把待决人列表落到审批行，审批中心「待我审批」按该字段
+				// 过滤。Best-effort。
+				s.applyApprovalPolicy(componentID, run.EnvironmentID, pa)
 				if cerr := s.approvalRepo.Create(pa); cerr != nil {
 					applog.Warnf("run: failed to seed pipeline_approval for %q: %v", t.Name, cerr)
+				} else if s.notifySink != nil && run.TriggeredBy != "" {
+					// §5.2：待审批 = 行动项事件，镜像给订阅者（best-effort）。
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								applog.Warnf("run: notify sink panicked on approval seed: %v", r)
+							}
+						}()
+						s.notifySink("approval_required", run.TriggeredBy,
+							fmt.Sprintf("[SDP] 待审批：%s / %s", run.CRName, t.Name),
+							fmt.Sprintf("任务 %q 等待审批。\n触发人: %s\n时间: %s",
+								t.Name, run.TriggeredBy, time.Now().Format(time.RFC3339)))
+					}()
 				}
 			}
 		}
@@ -411,6 +501,38 @@ func (s *PipelineRunService) ApplyStatus(ctx context.Context, targetID uuid.UUID
 	}
 	if err := s.repo.Update(run); err != nil {
 		return err
+	}
+
+	// run.finished（ui-12 §4.3）：终态落库后通知事件触发器。函数调用无总线；
+	// best-effort —— 钩子失败只记日志，不影响状态回写应答。
+	if s.finishedHook != nil && isTerminalPhase(run.Phase) {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					applog.Warnf("run: finished hook panicked for run %s: %v", run.ID, r)
+				}
+			}()
+			s.finishedHook(run.PipelineID, string(run.Phase))
+		}()
+	}
+	// §5.2 邮件订阅镜像（best-effort，绝不影响状态写入）：终态事件按订阅
+	// 白名单分发。evt 二分：Failed/Cancelled → run_failed，其余终态 → run_finished。
+	if s.notifySink != nil && isTerminalPhase(run.Phase) && run.TriggeredBy != "" {
+		evt := "run_finished"
+		if run.Phase == "Failed" || run.Phase == "Cancelled" {
+			evt = "run_failed"
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					applog.Warnf("run: notify sink panicked for run %s: %v", run.ID, r)
+				}
+			}()
+			s.notifySink(evt, run.TriggeredBy,
+				fmt.Sprintf("[SDP] 运行%s：%s（%s）", runPhaseWord(string(run.Phase)), run.CRName, evt),
+				fmt.Sprintf("运行 %s 终态 %s。\n触发人: %s\n时间: %s",
+					run.CRName, run.Phase, run.TriggeredBy, time.Now().Format(time.RFC3339)))
+		}()
 	}
 
 	for _, ts := range payload.Tasks {
@@ -606,6 +728,15 @@ func (s *PipelineRunService) GetLogs(runID uuid.UUID, taskName string, p common.
 	return s.logRepo.ListByRunTask(runID, taskName, p)
 }
 
+// StreamLogTail is the SSE cursor read (ui-12 §5.5): run-wide chunks created
+// at/after `since`, all tasks. The run must exist (same contract as GetLogs).
+func (s *PipelineRunService) StreamLogTail(runID uuid.UUID, since time.Time, limit int) ([]models.TaskRunLog, error) {
+	if _, err := s.repo.GetByID(runID); err != nil {
+		return nil, err
+	}
+	return s.logRepo.ListRunTail(runID, since, limit)
+}
+
 // selectTarget resolves the destination target: an explicit, online
 // targetId wins; otherwise the first online target is used. Errors if no
 // Runner is currently connected.
@@ -641,6 +772,18 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 	if err != nil {
 		return nil, err
 	}
+	// §6.1 废弃治理：deprecated 组件禁新触发（历史运行与产物全部保留）。
+	if s.componentGuard != nil {
+		lc, lerr := s.componentGuard.LifecycleOf(p.ComponentID)
+		if lerr != nil {
+			return nil, lerr
+		}
+		if lc == "deprecated" {
+			return nil, common.DomainErrorWithReasons(common.KindPipeline, http.StatusConflict, 7,
+				"component deprecated",
+				"组件已标记为废弃（lifecycle=deprecated），禁止触发新运行；历史运行与制品保留。如需恢复请在组件设置中改回 active。")
+		}
+	}
 	stages, err := s.stageRepo.ListByPipelineID(pipelineID)
 	if err != nil {
 		return nil, err
@@ -663,11 +806,13 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 	if req.RepoURL != "" {
 		spec.Repo = &runnerapi.RepoSource{URL: req.RepoURL, Ref: req.RepoRef, Path: req.RepoPath}
 	}
-	if len(req.Params) > 0 {
-		spec.Params = req.Params
+	// N-26：生效参数 = 声明默认 < 变量组 < 组件变量 < 运行输入（triggerParams）。
+	eff := s.triggerParams(p, req.Params)
+	if len(eff) > 0 {
+		spec.Params = eff
 	}
 	// G-5（hub 半边）：`${KEY}` 文本替换在触发时完成，模板保持静态。
-	subst := paramsMap(req.Params)
+	subst := paramsMap(eff)
 
 	var prevStageTaskNames []string
 	for _, stage := range stages {
@@ -1084,3 +1229,57 @@ func (s *PipelineRunService) Redispatch(ctx context.Context, runID uuid.UUID) (*
 	// caller sees the outcome of the redelivery attempt, not the pre-delivery copy.
 	return s.dispatchRepo.GetByID(job.ID)
 }
+
+// triggerSourceOf stamps the invocation channel onto a run: what the trigger
+// service set (cron/webhook/event) wins; everything else is manual.
+func triggerSourceOf(req *models.TriggerRequest) string {
+	switch req.TriggerSource {
+	case "cron", "webhook", "event":
+		return req.TriggerSource
+	default:
+		return "manual"
+	}
+}
+
+// runPhaseWord maps terminal phases to the 中文邮件标题词（§5.2 通知）。
+func runPhaseWord(p string) string {
+	switch p {
+	case "Succeeded":
+		return "成功"
+	case "Failed":
+		return "失败"
+	case "Cancelled":
+		return "已取消"
+	default:
+		return p
+	}
+}
+
+// isTerminalPhase reports whether a run phase ends the run's lifecycle.
+func isTerminalPhase(p runnerapi.PipelineRunPhase) bool {
+	return p == runnerapi.PipelineRunSucceeded || p == runnerapi.PipelineRunFailed || p == runnerapi.PipelineRunCancelled
+}
+
+// SetRunFinishedHook wires the run.finished event sink (ui-12 §4.3). Nil
+// (default) disables event notification.
+func (s *PipelineRunService) SetRunFinishedHook(hook func(pipelineID uuid.UUID, phase string)) {
+	s.finishedHook = hook
+}
+
+// SetNotifySink wires the §5.2 邮件订阅分发口. Nil = feature off.
+func (s *PipelineRunService) SetNotifySink(hook func(evt, subject, title, body string)) {
+	s.notifySink = hook
+}
+
+// SetChangeWindowGuard wires the §5.1 变更窗口闸门. Nil = feature off.
+func (s *PipelineRunService) SetChangeWindowGuard(g func() error) {
+	s.changeWindowGuard = g
+}
+
+// ComponentGuard is the §6.1 治理守卫窄接口：查组件生命周期。
+type ComponentGuard interface {
+	LifecycleOf(componentID uuid.UUID) (string, error)
+}
+
+// SetComponentGuard wires the §6.1 治理守卫. Nil = no governance constraint.
+func (s *PipelineRunService) SetComponentGuard(g ComponentGuard) { s.componentGuard = g }

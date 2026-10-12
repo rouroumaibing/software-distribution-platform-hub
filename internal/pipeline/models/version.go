@@ -36,11 +36,14 @@ func (PipelineVersion) TableName() string { return "pipeline_versions" }
 // 元信息（name / kind / description）与结构（stages/tasks）都在体内，因此
 // 一次改名与一次改阶段一样会被记成新版本。
 type Snapshot struct {
-	PipelineID  uuid.UUID       `json:"pipelineId"`
-	Name        string          `json:"name"`
-	Kind        string          `json:"kind"`
-	Description string          `json:"description,omitempty"`
-	Stages      []SnapshotStage `json:"stages"`
+	PipelineID  uuid.UUID `json:"pipelineId"`
+	Name        string    `json:"name"`
+	Kind        string    `json:"kind"`
+	Description string    `json:"description,omitempty"`
+	// Params is the runtime-parameter declaration (N-26), carried so a
+	// version rollback restores the declaration the run was authored with.
+	Params json.RawMessage `json:"params,omitempty"`
+	Stages []SnapshotStage `json:"stages"`
 }
 
 // SnapshotStage is one stage plus the task templates grouped under it, in
@@ -90,6 +93,7 @@ func BuildSnapshot(
 		Name:        p.Name,
 		Kind:        p.Kind,
 		Description: p.Description,
+		Params:      rawOrEmpty(p.Params),
 		Stages:      make([]SnapshotStage, 0, len(stages)),
 	}
 	for _, st := range stages {

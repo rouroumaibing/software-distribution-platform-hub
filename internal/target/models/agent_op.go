@@ -23,10 +23,11 @@ const (
 // on reconnect) or — for install/upgrade — waiting on the bootstrap flow
 // (§9.9 引导执行器属独立特性).
 const (
-	AgentOpQueued    = "queued"
-	AgentOpRunning   = "running"
-	AgentOpSucceeded = "succeeded"
-	AgentOpFailed    = "failed"
+	AgentOpQueued          = "queued"
+	AgentOpPendingApproval = "pending_approval" // 自升级审批闸（B4）：upgrade 经人工批准后才转 queued
+	AgentOpRunning         = "running"
+	AgentOpSucceeded       = "succeeded"
+	AgentOpFailed          = "failed"
 )
 
 // IsValidAgentOpType guards the op-type enum at the service boundary.
@@ -40,9 +41,14 @@ func IsValidAgentOpType(t string) bool {
 
 // IsValidAgentOpTransition reports whether the Runner may move an op from
 // `from` to `to`. Forward-only; terminal states (succeeded / failed) never
-// change again so the audit trail stays trustworthy.
+// change again so the audit trail stays trustworthy. Hub-internal transitions
+// (pending_approval → queued on approval, pending_approval → failed on reject /
+// timeout) are applied via UpdateStatus directly and are included here only so
+// the matrix stays complete — the Runner itself never reports pending_approval.
 func IsValidAgentOpTransition(from, to string) bool {
 	switch from {
+	case AgentOpPendingApproval:
+		return to == AgentOpQueued || to == AgentOpFailed
 	case AgentOpQueued:
 		return to == AgentOpRunning || to == AgentOpSucceeded || to == AgentOpFailed
 	case AgentOpRunning:

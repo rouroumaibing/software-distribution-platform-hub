@@ -30,6 +30,25 @@ type Component struct {
 	// the rows that cannot be mapped (with a warning query).
 	OwnerSub   *string `gorm:"size:128;index" json:"ownerSub,omitempty"`
 	OwnerGroup *string `gorm:"size:128;index" json:"ownerGroup,omitempty"`
+
+	// --- ui-12 §6.1 服务树治理字段 -----------------------------------------
+	// Tags 逗号分隔的治理标签（如 "core,billing"），搜索过滤用。
+	Tags string `gorm:"size:256" json:"tags,omitempty"`
+	// Lifecycle: active（活跃）| frozen（冻结）| deprecated（废弃）。
+	// 废弃 = 禁新触发 + 保留历史（废弃流程的落地语义）；冻结仅提示不拦截。
+	Lifecycle string `gorm:"size:16;not null;default:active" json:"lifecycle"`
+}
+
+// Lifecycle constants for Component.Lifecycle.
+const (
+	LifecycleActive     = "active"
+	LifecycleFrozen     = "frozen"
+	LifecycleDeprecated = "deprecated"
+)
+
+// ValidLifecycle reports whether s is a known lifecycle value.
+func ValidLifecycle(s string) bool {
+	return s == LifecycleActive || s == LifecycleFrozen || s == LifecycleDeprecated
 }
 
 func (Component) TableName() string { return "components" }

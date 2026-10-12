@@ -28,6 +28,20 @@ func (r *ComponentConfigRepository) FindByComponentID(componentID uuid.UUID, env
 	})
 }
 
+// ListAll lists every config row of the scope without pagination — the
+// snapshot capture (config_version.go) needs the full key set to version it.
+func (r *ComponentConfigRepository) ListAll(componentID uuid.UUID, environmentID *uuid.UUID) ([]models.ComponentConfig, error) {
+	var rows []models.ComponentConfig
+	q := r.DB.Where("component_id = ?", componentID)
+	if environmentID != nil {
+		q = q.Where("environment_id = ?", *environmentID)
+	} else {
+		q = q.Where("environment_id IS NULL")
+	}
+	err := q.Order("key").Find(&rows).Error
+	return rows, err
+}
+
 // GetByKey resolves the config row for a (component, key) pair. Pass
 // environmentID == nil to match the global (environment-unscoped) row.
 func (r *ComponentConfigRepository) GetByKey(componentID uuid.UUID, key string, environmentID *uuid.UUID) (*models.ComponentConfig, error) {
