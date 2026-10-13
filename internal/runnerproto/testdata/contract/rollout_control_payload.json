@@ -1,0 +1,6 @@
+{
+  "pipelineRunName": "pr-123",
+  "taskName": "release",
+  "action": "promote",
+  "operator": "alice"
+}

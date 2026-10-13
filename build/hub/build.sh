@@ -4,8 +4,6 @@
 #   charts/ chart 源目录 -> 打 tgz；最终 pack 成 <component>-<version>.tar.gz（charts + images 一起交付）
 # 用法: ./build.sh [version]    默认 v0.0.1
 #       ./build.sh clean        清理 output/
-# 注意: hub 的 go.mod replace 指向 ../software-distribution-platform-runner，
-#       因此必须在 workspace 根保持两个模块同级（脚本已按此假设取相对路径）。
 set -e
 
 PROJECT_ROOT=$(cd "$(dirname "$0")"/../..; pwd)

@@ -1,0 +1,10 @@
+{
+  "agentVersion": "v0.0.1",
+  "os": "linux",
+  "arch": "amd64",
+  "capabilities": [
+    "exec"
+  ],
+  "targetName": "node-7",
+  "goVersion": "go1.27.0"
+}

@@ -1,0 +1,57 @@
+{
+  "type": "apply_pipeline_run",
+  "payload": {
+    "name": "pr-123",
+    "namespace": "sdp-workflow",
+    "spec": {
+      "tasks": [
+        {
+          "name": "build",
+          "type": "Build",
+          "timeoutSeconds": 30
+        },
+        {
+          "name": "approve",
+          "type": "Approval",
+          "dependsOn": [
+            "build"
+          ],
+          "approvalConfig": {
+            "requiredApprovals": 1
+          }
+        },
+        {
+          "name": "release",
+          "type": "Release",
+          "dependsOn": [
+            "approve"
+          ],
+          "releaseSpec": {
+            "source": "Chart",
+            "chart": {
+              "repoURL": "https://charts.example.com",
+              "name": "app",
+              "version": "1.2.3"
+            }
+          }
+        }
+      ],
+      "repo": {
+        "url": "https://github.com/org/repo.git",
+        "ref": "main"
+      },
+      "params": [
+        {
+          "name": "ENV",
+          "value": "prod"
+        }
+      ],
+      "tenantID": "t1",
+      "projectID": "p1",
+      "environmentID": "e1",
+      "targetNamespace": "t1-p1-e1",
+      "triggeredBy": "alice@example.com"
+    },
+    "publishVersion": "v0.0.1"
+  }
+}

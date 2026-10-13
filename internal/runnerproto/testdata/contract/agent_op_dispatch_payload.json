@@ -1,0 +1,7 @@
+{
+  "opID": "op-1",
+  "targetID": "node-7",
+  "opType": "exec",
+  "detail": "echo hi",
+  "namespace": "sdp-workflow"
+}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 )
 
 // 覆盖 C-09 的对比规则（纯逻辑，无 DB）。这些是"版本对比"功能的**判定核心**：

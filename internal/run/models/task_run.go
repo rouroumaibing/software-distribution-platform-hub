@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 )
 
 // TaskRun is the hub-side persisted record of a runner TaskRun CR — one

@@ -1,0 +1,9 @@
+{
+  "targetID": "node-7",
+  "pipelineRunName": "pr-123",
+  "pipelineRunNamespace": "sdp-workflow",
+  "phase": "Succeeded",
+  "message": "done",
+  "startTime": "2026-10-13T12:00:00Z",
+  "completionTime": "2026-10-13T12:00:00Z"
+}

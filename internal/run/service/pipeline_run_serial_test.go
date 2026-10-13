@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"

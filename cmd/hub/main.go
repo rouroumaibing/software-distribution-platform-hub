@@ -27,7 +27,7 @@ import (
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/platform"
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 
 	artifacthandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/handler"
 	artifactrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/repository"

@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 	datatypes "gorm.io/datatypes"
 
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 )
 
 // RolloutRun records progressive-delivery history for a Deploy-type

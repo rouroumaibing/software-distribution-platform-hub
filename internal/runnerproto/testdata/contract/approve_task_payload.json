@@ -1,0 +1,5 @@
+{
+  "pipelineRunName": "pr-123",
+  "taskName": "approve",
+  "approver": "alice@example.com"
+}

@@ -8,7 +8,7 @@ import (
 
 	// Reuse the runner's CRD enum types so a template's Type can be copied
 	// straight into runnerapi.PipelineTaskSpec.Type at trigger time.
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 )
 
 // PipelineTaskTemplate is the definition-level counterpart of

@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/gateway"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/run/models"

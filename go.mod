@@ -8,7 +8,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/minio/minio-go/v7 v7.3.0
-	github.com/rouroumaibing/software-distribution-platform-runner v0.0.0
 	github.com/stretchr/testify v1.11.1
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.1
@@ -17,6 +16,7 @@ require (
 	gorm.io/datatypes v1.2.0
 	gorm.io/driver/postgres v1.6.2
 	gorm.io/gorm v1.31.2
+	k8s.io/apimachinery v0.36.0
 	k8s.io/klog/v2 v2.140.0
 )
 
@@ -90,17 +90,9 @@ require (
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.4.7 // indirect
-	k8s.io/api v0.36.0 // indirect
-	k8s.io/apimachinery v0.36.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
-	sigs.k8s.io/controller-runtime v0.24.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
 )
-
-// 开发期:runner 还没打 tag 发布正式版本,先用 replace 指向本地相对路径。
-// 等 runner 仓库有了第一个 release(比如 v0.1.0)之后,把下面这行删掉,
-// 上面 require 里的版本号改成对应的 tag,然后 `go mod tidy` 即可从 GitHub 拉取。
-replace github.com/rouroumaibing/software-distribution-platform-runner => ../software-distribution-platform-runner

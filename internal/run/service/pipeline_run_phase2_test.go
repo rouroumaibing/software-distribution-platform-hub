@@ -10,7 +10,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
-	runnerapi "github.com/rouroumaibing/software-distribution-platform-runner/api/v1alpha1"
+	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	pipelinemodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/models"

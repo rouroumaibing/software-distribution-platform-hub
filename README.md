@@ -8,12 +8,12 @@
 - **构建产物统一落在 `output/` 下**（`make build` 的 `output/bin/hub`、`make package` 的 `output/{charts,images}/` 与交付包），清理即一条 `rm -rf output`；
 - `package` 产物（交付包）默认版本 `v0.0.1`；
 - **起服务**：`make start-dev`（后台运行，pid 文件 + 进程组管理）→ `make stop-dev`；产出镜像 / 交付包用 `make package`；
-- hub 的 `go.mod` 含 `replace github.com/rouroumaibing/software-distribution-platform-runner => ../software-distribution-platform-runner`，因此**构建时 runner 仓库须与 hub 处于同级目录**，否则报 `replacement directory ... does not exist`。
+- hub 的线协议类型（runner 的 `api/v1alpha1` 派生快照）位于 `internal/runnerproto/`，hub 可独立构建、不依赖 runner 仓库源码。
 
 | make target | 作用 |
 | --- | --- |
 | `make build` | 编译二进制到 `output/bin/hub`（`go build ./cmd/hub`） |
-| `make package` | 组件打包：交叉编译 → 运行时镜像 + docker save + charts → 交付包 `output/software-distribution-platform-hub-<version>.tar.gz`，并尝试推送本地 registry（`build/hub/build.sh`） |
+| `make package` | 组件打包：交叉编译 → 运行时镜像 + docker save + charts → 交付包 `output/software-distribution-platform-hub-<version>.tar.gz`（`build/hub/build.sh`） |
 | `make start-dev` | 启动本地开发服务（`hack/svc.sh start`：pid 文件 + 进程组管理，启动前自动清理旧实例；`go run ./cmd/hub`） |
 | `make stop-dev` | 停止本地开发服务（`hack/svc.sh stop`，按 pid 文件 + 进程特征兜底清理） |
 | `make clean` | **先停本地服务**，再删生成物（`output/ .run/ coverage/`、历史位置 `bin/`、仓根裸编译二进制、散落单文件），保留下载依赖与工具链；**`docs/` 下的 swaggo 生成物已入库，默认保留** |

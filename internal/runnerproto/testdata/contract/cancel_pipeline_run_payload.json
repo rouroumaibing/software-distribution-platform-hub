@@ -1,0 +1,5 @@
+{
+  "pipelineRunName": "pr-123",
+  "namespace": "sdp-workflow",
+  "operator": "bob"
+}

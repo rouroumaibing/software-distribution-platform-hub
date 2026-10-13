@@ -1,0 +1,7 @@
+{
+  "targetID": "node-7",
+  "pipelineRunName": "pr-123",
+  "taskName": "build",
+  "stream": "stdout",
+  "chunk": "building...\n"
+}
