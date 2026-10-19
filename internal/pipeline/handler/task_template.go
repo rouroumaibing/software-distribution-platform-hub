@@ -20,14 +20,14 @@ func NewTaskTemplateHandler(svc *service.TaskTemplateService) *TaskTemplateHandl
 }
 
 func (h *TaskTemplateHandler) RegisterRoutes(rg *gin.RouterGroup) {
-	rg.POST("/stages/:stageId/tasks", h.Create)
-	rg.GET("/stages/:stageId/tasks", h.List)
+	rg.POST("/stages/:id/tasks", h.Create)
+	rg.GET("/stages/:id/tasks", h.List)
 	rg.PUT("/tasks/:id", h.Update)
 	rg.DELETE("/tasks/:id", h.Delete)
 }
 
 func (h *TaskTemplateHandler) Create(c *gin.Context) {
-	stageID, err := uuid.Parse(c.Param("stageId"))
+	stageID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return
@@ -46,7 +46,7 @@ func (h *TaskTemplateHandler) Create(c *gin.Context) {
 }
 
 func (h *TaskTemplateHandler) List(c *gin.Context) {
-	stageID, err := uuid.Parse(c.Param("stageId"))
+	stageID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.AbortWithError(c, common.ErrBadRequest.WithError(err))
 		return

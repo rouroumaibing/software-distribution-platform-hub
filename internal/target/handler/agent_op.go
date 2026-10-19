@@ -52,8 +52,9 @@ func (h *AgentOpHandler) RegisterRoutes(rg *gin.RouterGroup) {
 // on, leaving dev mode (auth==nil) unauthenticated.
 func (h *AgentOpHandler) RegisterApprovalRoutes(rg *gin.RouterGroup) {
 	rg.GET("/agent-ops", h.ListAll) // 平台级台账，可选 ?status= 过滤（审批中心用 pending_approval）
-	rg.POST("/agent-ops/:opId/approve", h.Approve)
-	rg.POST("/agent-ops/:opId/reject", h.Reject)
+	// 通配符统一 :id（gin 禁止同一路径段两个通配符名，:opId 会启动 panic）
+	rg.POST("/agent-ops/:id/approve", h.Approve)
+	rg.POST("/agent-ops/:id/reject", h.Reject)
 }
 
 // Get godoc
@@ -238,7 +239,7 @@ func (h *AgentOpHandler) ListAll(c *gin.Context) {
 // @Failure 409 {object} common.Envelope
 // @Router /agent-ops/{opId}/approve [post]
 func (h *AgentOpHandler) Approve(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("opId"))
+	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.Fail(c, http.StatusBadRequest, err)
 		return
@@ -262,7 +263,7 @@ func (h *AgentOpHandler) Approve(c *gin.Context) {
 // @Failure 409 {object} common.Envelope
 // @Router /agent-ops/{opId}/reject [post]
 func (h *AgentOpHandler) Reject(c *gin.Context) {
-	id, err := uuid.Parse(c.Param("opId"))
+	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.Fail(c, http.StatusBadRequest, err)
 		return

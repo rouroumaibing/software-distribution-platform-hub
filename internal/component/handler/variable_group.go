@@ -27,7 +27,9 @@ func NewVariableGroupHandler(svc *service.VariableGroupService) *VariableGroupHa
 }
 
 func (h *VariableGroupHandler) RegisterRoutes(rg *gin.RouterGroup) {
-	rg.GET("/orgs/:orgId/variable-groups", h.ListByOrg)
+	// 通配符必须叫 :id：gin 禁止同一路径段出现两个通配符名（/orgs/:id 已由
+	// org/catalog handler 注册，:orgId 会触发 addRoute panic，hub 启动即崩）。
+	rg.GET("/orgs/:id/variable-groups", h.ListByOrg)
 	rg.POST("/variable-groups", h.Create)
 	rg.PUT("/variable-groups/:id", h.Update)
 	rg.DELETE("/variable-groups/:id", h.Delete)
@@ -37,7 +39,7 @@ func (h *VariableGroupHandler) RegisterRoutes(rg *gin.RouterGroup) {
 }
 
 func (h *VariableGroupHandler) ListByOrg(c *gin.Context) {
-	orgID, err := uuid.Parse(c.Param("orgId"))
+	orgID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		common.Fail(c, http.StatusBadRequest, err)
 		return
