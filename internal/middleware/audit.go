@@ -128,7 +128,7 @@ func AuditComponentScope(c *gin.Context) bool {
 }
 
 // RequireAuditAccess gates GET /audit-logs with the two-tier rule behind the
-// 组件级审计下沉 (ui-12 5.4 拍板 2026-10-11):
+// 组件级审计下沉 (ui-12 5.4):
 //
 //  1. platform user:manage → platform-wide access (previous behavior);
 //  2. otherwise the request must carry ?componentId= and the subject must

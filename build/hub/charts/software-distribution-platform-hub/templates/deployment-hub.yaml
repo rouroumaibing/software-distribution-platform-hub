@@ -62,6 +62,23 @@ spec:
             # ⚠️ 用某密钥写过凭据后换密钥即无法解密——设定后不可换。生产用 secretKeyRef。
             - name: CREDENTIAL_ENCRYPTION_KEY
               value: {{ .Values.credentialEncryptionKey | default "" | quote }}
+            {{- if .Values.gatewayRoute.enabled }}
+            # hub 后端以 TLS 提供（与 console 一致）：Envoy Gateway 经 BackendTLSPolicy
+            # 用 hub-tls 的 ca.crt 校验 hub 证书；HUB_ADDR 仍 :8080，但走 TLS。
+            # 关闭 gatewayRoute（直连 pod 调试）时回落明文，避免无证书时启动失败。
+            - name: HUB_TLS_CERT_FILE
+              value: /etc/hub-tls/server.crt
+            - name: HUB_TLS_KEY_FILE
+              value: /etc/hub-tls/server.key
+            # join-bundle 端点（ADR-0002）用同 secret 的 ca.crt 作为下发信任根。
+            - name: HUB_TLS_CA_FILE
+              value: /etc/hub-tls/ca.crt
+            {{- end }}
+            {{- if .Values.publicUrl }}
+            # 对外网关基址（ADR-0002 join-bundle 的 URL 真源）；未配置则端点 501。
+            - name: HUB_PUBLIC_URL
+              value: {{ .Values.publicUrl | quote }}
+            {{- end }}
             - name: DB_DSN
               value: "postgres://{{ .Values.postgres.user }}:{{ .Values.postgres.pwd }}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.dbname }}?sslmode=disable"
             - name: LOG_LEVEL
@@ -104,7 +121,7 @@ spec:
               cpu: {{ .Values.resources.resources_cpu_limits }}
               memory: {{ .Values.resources.resources_mem_limits }}
           ports:
-            - name: http
+            - name: https
               containerPort: {{ .Values.service.containerPort }}
               protocol: TCP
           volumeMounts:
@@ -113,6 +130,11 @@ spec:
             {{- if .Values.auth.trustedCASecret }}
             - name: sdp-ca
               mountPath: /etc/sdp-ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.gatewayRoute.enabled }}
+            - name: hub-tls
+              mountPath: /etc/hub-tls
               readOnly: true
             {{- end }}
       volumes:
@@ -127,6 +149,19 @@ spec:
               # cert-create.sh 约定：console-tls 含 ca.crt / server.crt / server.key
               - key: ca.crt
                 path: ca.crt
+        {{- end }}
+        {{- if .Values.gatewayRoute.enabled }}
+        - name: hub-tls
+          secret:
+            secretName: {{ .Values.gatewayRoute.caSecretName }}
+            defaultMode: 384
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: server.crt
+                path: server.crt
+              - key: server.key
+                path: server.key
         {{- end }}
       terminationGracePeriodSeconds: 30
       dnsPolicy: ClusterFirst

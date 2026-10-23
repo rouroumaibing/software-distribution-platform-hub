@@ -12,6 +12,6 @@ spec:
   selector:
     app: {{ .Values.basic.component }}
   ports:
-    - name: http
+    - name: https
       port: {{ .Values.service.externPort }}
       targetPort: {{ .Values.service.containerPort }}

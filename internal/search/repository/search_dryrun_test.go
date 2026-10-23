@@ -15,7 +15,7 @@ import (
 // 为什么值得单独测 —— 这里钉的三件事全是"写错也不报错"的类型：
 //  1. ORDER BY 到底有没有出现。GORM 的 Order() 只认 string / clause.OrderBy /
 //     clause.OrderByColumn，传 gorm.Expr 会被**静默丢弃**：不报错、SQL 里就是没有
-//     ORDER BY，结果变成"数据库返回顺序"（实践上≈随机），搜索第一行不再是精确命中。
+//     ORDER BY，结果变成"数据库返回顺序"（实践上≈随机），搜索第一行不保证精确命中。
 //  2. LIKE 元字符有没有转义。没转义时用户输入一个 `_` 就命中全表，而测试环境里
 //     根本看不出异常。
 //  3. 软删过滤是否漏表。orgs / services / components / pipelines 都是软删表，

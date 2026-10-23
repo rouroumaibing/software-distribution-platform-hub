@@ -21,6 +21,7 @@ import (
 
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/metrics"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/target/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/target/service"
 )
 
@@ -116,13 +117,40 @@ func (h *HubServer) SetAgentInfoHandler(fn AgentInfoHandler) { h.agentInfoH = fn
 // ServeWS is the gin handler mounted at the gateway path. It authenticates
 // the Runner, registers the connection, marks the target online, then reads
 // messages until the connection drops.
+//
+// 三态鉴权（STEELMAN-ADR2-LEFTOVERS §7）：
+//
+//	① Bearer == 共享 GATEWAY_TOKEN（或未启用 token 的 dev）→ legacy 路径，
+//	   身份源 = X-Target-Name + ADR-0001 首连 auto-enroll；
+//	② Bearer == 未消费、未过期的一次性 enroll token → 原子消费，换发
+//	   per-target 凭据并经 101 响应头 X-SDP-Runner-Credential 返回；
+//	③ Bearer == 某目标的 per-target 凭据 → 服务端反查目标行，身份源 = token，
+//	   X-Target-Name 降级为一致性断言（ADR-0001 ⚠️ 自报身份收口）。
 func (h *HubServer) ServeWS(c *gin.Context) {
 	token := extractBearer(c.GetHeader("Authorization"))
+	targetName := c.GetHeader("X-Target-Name")
+
 	if h.gatewayToken != "" && token != h.gatewayToken {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid gateway token"})
+		var respHeader http.Header
+		tg, cred, err := h.targetSvc.ConsumeEnrollToken(token, targetName)
+		if err != nil {
+			tg, err = h.targetSvc.GetByCredential(token)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid gateway token"})
+				return
+			}
+			if targetName != "" && targetName != tg.Name {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "target name does not match credential"})
+				return
+			}
+		} else {
+			respHeader = http.Header{"X-SDP-Runner-Credential": {cred}}
+			applog.Infof("gateway: target %s consumed one-time enroll token", tg.Name)
+		}
+		h.serveTarget(c, tg, respHeader)
 		return
 	}
-	targetName := c.GetHeader("X-Target-Name")
+
 	if targetName == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing X-Target-Name"})
 		return
@@ -148,30 +176,37 @@ func (h *HubServer) ServeWS(c *gin.Context) {
 		}
 		applog.Infof("gateway: target %s auto-enrolled (vendor=%s region=%s)", targetName, vendor, region)
 	}
+	h.serveTarget(c, tg, nil)
+}
 
-	ws, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
+// serveTarget performs the upgrade and runs the connection lifecycle shared
+// by all three auth states. respHeader, when non-nil, rides the 101 response
+// (gorilla copies it into the handshake reply) — the enroll-token state uses
+// it to hand the Runner its per-target credential.
+func (h *HubServer) serveTarget(c *gin.Context, tg *models.Target, respHeader http.Header) {
+	ws, err := h.upgrader.Upgrade(c.Writer, c.Request, respHeader)
 	if err != nil {
-		applog.Infof("gateway: upgrade failed for target %s: %v", targetName, err)
+		applog.Infof("gateway: upgrade failed for target %s: %v", tg.Name, err)
 		return
 	}
 
 	h.register(tg.ID, ws)
-	h.setGauge(targetName, tg.ID, true)
+	h.setGauge(tg.Name, tg.ID, true)
 	if h.connectH != nil {
 		h.connectH(c.Request.Context(), tg.ID)
 	}
 	defer func() {
 		h.unregister(tg.ID, ws)
-		h.setGauge(targetName, tg.ID, false)
+		h.setGauge(tg.Name, tg.ID, false)
 	}()
 
 	if err := h.targetSvc.Heartbeat(tg.ID, true); err != nil {
-		applog.Infof("gateway: mark online failed for target %s: %v", targetName, err)
+		applog.Infof("gateway: mark online failed for target %s: %v", tg.Name, err)
 	}
 
-	applog.Infof("gateway: target %s connected", targetName)
+	applog.Infof("gateway: target %s connected", tg.Name)
 	h.readLoop(c.Request.Context(), tg.ID, ws)
-	applog.Infof("gateway: target %s disconnected", targetName)
+	applog.Infof("gateway: target %s disconnected", tg.Name)
 }
 
 func (h *HubServer) register(targetID uuid.UUID, ws *websocket.Conn) {

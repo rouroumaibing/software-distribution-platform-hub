@@ -24,6 +24,12 @@ type Target struct {
 	// POST /targets/:id/enroll-token; it is never serialized to the client.
 	EnrollToken         *string    `gorm:"size:128" json:"-"`
 	EnrollTokenExpireAt *time.Time `json:"-"`
+
+	// RunnerCredential is the per-target bearer credential a Runner presents
+	// on every gateway WS dial after trading in its one-time enroll token
+	// (STEELMAN-ADR2-LEFTOVERS §7): the identity source on the wire, with
+	// X-Target-Name demoted to a consistency assertion. Never serialized.
+	RunnerCredential *string `gorm:"size:128;index" json:"-"`
 }
 
 func (Target) TableName() string { return "targets" }

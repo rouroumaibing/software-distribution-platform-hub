@@ -474,6 +474,12 @@ func main() {
 	targetHandler := targethandler.NewTargetHandler(targetSvc)
 	// 接入编排（§9.9）：install/upgrade 取版本矩阵里的 runner 版本。
 	targetHandler.SetAgentOps(agentOpSvc, cfg.PackageVersionRunner)
+	// 安装引导（ADR-0002）：配置了对外地址才启用 join-bundle，否则端点 501。
+	if cfg.PublicURL != "" {
+		targetHandler.SetJoinBundle(targetsvc.NewJoinBundleIssuer(
+			targetSvc, cfg.PublicURL, cfg.TLSCAFile, cfg.TLSCertFile, cfg.PackageVersionRunner))
+		applog.Infof("hub: join-bundle endpoint enabled (public URL %s)", cfg.PublicURL)
+	}
 	// agent op 台账读侧：轮询 / 列表 / SSE 流式（§16.5）。
 	agentOpHandler := targethandler.NewAgentOpHandler(agentOpSvc)
 	envHandler := envhandler.NewEnvironmentHandler(envSvc)
@@ -611,7 +617,7 @@ func main() {
 	resourceOwnershipHandler.RegisterRoutes(platformGroup)
 	roleMappingHandler.RegisterRoutes(platformGroup)
 	permRequestHandler.RegisterRoutes(platformGroup)
-	// STATUS #19 + ui-12 5.4 组件级审计下沉（2026-10-11 拍板）：审计读端点
+	// STATUS #19 + ui-12 5.4 组件级审计下沉：审计读端点
 	// 双通道 —— 平台管理员（user:manage）全量可查；组件管理员（component:
 	// manage）须携带 ?componentId= 且查询被 handler 强制钳到该组件。
 	// RequireAuditAccess 中间件 + handler 过滤双保险；写入仍由
@@ -621,7 +627,7 @@ func main() {
 		auditGroup.Use(middleware.RequireAuditAccess(bindingSvc, bindingSvc))
 	}
 	permhandler.NewAuditLogHandler(auditRepo).RegisterRoutes(auditGroup)
-	// B4 平台自升级审批流（2026-10-12 拍板完整版）：upgrade op 入审批闸，
+	// B4 平台自升级审批流：upgrade op 入审批闸，
 	// 审批/拒绝是平台级运维动作，要求持有 ops:manage（种子 sdp-admin 已含）。
 	// 读侧（GET /agent-ops 列表、GET /targets/:id/agent-ops、台账 SSE）挂在
 	// 裸 api（与既有 agentOpHandler.RegisterRoutes 一致）；写侧审批动作挂本组。
@@ -789,6 +795,13 @@ func main() {
 	}
 
 	go func() {
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			applog.Infof("hub: listening on %s (TLS, gateway %s)", cfg.Addr, cfg.GatewayPath)
+			if err := srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+				applog.Fatalf("hub: server exited: %v", err)
+			}
+			return
+		}
 		applog.Infof("hub: listening on %s (gateway %s)", cfg.Addr, cfg.GatewayPath)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			applog.Fatalf("hub: server exited: %v", err)

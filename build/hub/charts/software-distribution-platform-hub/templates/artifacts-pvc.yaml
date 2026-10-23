@@ -5,6 +5,9 @@ metadata:
   namespace: {{ .Values.namespace }}
 spec:
   accessModes: ["ReadWriteOnce"]
+  {{- if .Values.artifact.storageClassName }}
+  storageClassName: {{ .Values.artifact.storageClassName }}
+  {{- end }}
   resources:
     requests:
       storage: {{ .Values.artifact.storage }}

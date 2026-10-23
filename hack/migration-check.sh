@@ -15,7 +15,7 @@
 #     migrations/0001..0005 ──► 灌旧数据 ──► migrations/0015 ──► AutoMigrate ──► 0006..0016
 #
 #   ⚠️ Path B 的顺序是实测结论，与 0015 早先的注释相反: AutoMigrate **自己**也没法在
-#      老库上跑 —— 它要把 component_configs.created_by 改成 varchar，而指向 users(id)
+老库上跑 —— 它把 component_configs.created_by 写为 varchar，而指向 users(id)
 #      的 FK 还在，Postgres 直接拒绝（42804）。所以必须**先跑 0015 摘 FK + 回填**，
 #      再启动新版 hub。（0015 自带 ADD COLUMN IF NOT EXISTS owner_sub，不依赖
 #      AutoMigrate 先跑。）

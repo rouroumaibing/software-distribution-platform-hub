@@ -9,7 +9,7 @@ import (
 // keeps no user table (D3), so the email address is declared BY the subject —
 // it is the destination the subject typed in, not a directory lookup.
 //
-// 决策 #5 收敛（2026-10-12 用户拍板）：本期渠道只做「邮件」；站内通知中心已存在
+// 决策 #5 收敛：本期渠道只做「邮件」；站内通知中心已存在
 // （聚合型、无需订阅），企业 IM/Webhook 渠道留作后续适配器插件。
 type Subscription struct {
 	// Subject is the authenticated principal (Keycloak sub / dev user) —

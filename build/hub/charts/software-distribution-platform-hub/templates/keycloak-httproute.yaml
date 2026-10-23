@@ -2,12 +2,12 @@
 # Keycloak 对外路由（/keycloak 前缀）：替代 keycloakx 子 chart 的 Ingress
 # （keycloak.ingress.enabled 为 false —— 不使用 ingress-nginx）。
 #
-# 路由语义与原 Ingress 等价：host www.sdpworkflow.com、Prefix /keycloak、后端 HTTP svc 80。
+# 路由语义与原 Ingress 等价：host www.sdpworkflow.com、Prefix /keycloak、后端 HTTPS svc 8443。
 # Gateway API 按「路径最长前缀」优先，/keycloak 天然先于 console 的 / 命中，
 # 不依赖规则书写顺序（与原 nginx 最长前缀行为一致）。
 # parentRefs 不指定 sectionName => 同时挂 http/https 两个 listener（dev 下 http 也可直连调试）。
-# OIDC 正式链路走 https；keycloak 后端保持 HTTP，
-# proxy.mode=xforwarded 由 envoy 注入的 X-Forwarded-* 推导前端地址（见 values 注释）。
+# OIDC 正式链路走 https；keycloak 后端以 args 显式 --https-certificate-file 起 HTTPS（8443），
+# 由下方 BackendTLSPolicy 用 hub-keycloak-tls 校验（见 hub values.yaml 的 keycloak.args）。
 #
 # Gateway（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（local-kind-dev/deploy/gateway-sdp.yaml，
 # 不随仓分发），本 chart 按名字引用（gatewayRoute.name，可 --set 覆盖）——保持独立可装：
@@ -28,7 +28,31 @@ spec:
             type: PathPrefix
             value: /keycloak
       backendRefs:
-        # keycloakx 子 chart 创建的 svc（release 名 hub + keycloak-http）；端口名 http -> 80。
+        # keycloakx 子 chart 创建的 svc（hub-keycloak-http）；httpsPort 8443 已渲染，
+        # keycloak 经 args 显式 https 证书参数起 TLS（见 hub values.yaml 的 keycloak.args）。
         - name: hub-keycloak-http
-          port: 80
+          port: 8443
+{{- end }}
+---
+{{- if .Values.gatewayRoute.enabled }}
+# keycloak 后端 BackendTLSPolicy：envoy 用 hub-keycloak-tls 的 ca.crt 校验 keycloak 证书。
+# validation.hostname 取后端 svc FQDN（hub-keycloak-http.<ns>.svc.cluster.local），
+# cert-create.sh 为 hub-keycloak-http 生成的证书 SAN 已覆盖该 FQDN。
+# keycloak HTTPS 由 hub values.yaml 的 keycloak.args 与 extraVolumes（证书挂载）开启。
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: keycloak
+  namespace: {{ .Values.namespace }}
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: hub-keycloak-http
+  validation:
+    hostname: hub-keycloak-http.{{ .Values.namespace }}.svc.cluster.local
+    caCertificateRefs:
+      - group: ""
+        kind: Secret
+        name: hub-keycloak-tls
 {{- end }}

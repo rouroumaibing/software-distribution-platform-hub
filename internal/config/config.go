@@ -14,6 +14,19 @@ import (
 type Config struct {
 	// Addr is the host:port the HTTP + gateway server listens on.
 	Addr string
+	// TLSCertFile / TLSKeyFile, when both set, make the server serve TLS on
+	// Addr (used behind Envoy Gateway with a BackendTLSPolicy validating the
+	// hub cert). Empty => plaintext HTTP (dev / direct-to-pod).
+	TLSCertFile string
+	TLSKeyFile  string
+	// TLSCAFile is the CA bundle the join-bundle endpoint hands to runner
+	// installers (ADR-0002). Empty falls back to a ca.crt sibling of
+	// TLSCertFile when that is set.
+	TLSCAFile string
+	// PublicURL is the externally reachable gateway base URL (scheme + host +
+	// port, e.g. https://www.sdpworkflow.com:8443). It anchors the runner
+	// join-bundle (ADR-0002); empty disables that endpoint (501).
+	PublicURL string
 	// GatewayPath is the WebSocket route Runners dial into, e.g. /gateway/ws.
 	GatewayPath string
 	// GatewayToken is the shared secret Runners present as a Bearer token.
@@ -157,6 +170,10 @@ func getenvBool(key string, def bool) bool {
 func Load() *Config {
 	return &Config{
 		Addr:                      getenv("HUB_ADDR", ":8080"),
+		TLSCertFile:               os.Getenv("HUB_TLS_CERT_FILE"),
+		TLSKeyFile:                os.Getenv("HUB_TLS_KEY_FILE"),
+		TLSCAFile:                 os.Getenv("HUB_TLS_CA_FILE"),
+		PublicURL:                 os.Getenv("HUB_PUBLIC_URL"),
 		GatewayPath:               getenv("GATEWAY_PATH", "/gateway/ws"),
 		GatewayToken:              os.Getenv("GATEWAY_TOKEN"),
 		DBDSN:                     getenv("DB_DSN", "postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable"),

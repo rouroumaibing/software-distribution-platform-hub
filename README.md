@@ -33,6 +33,8 @@
 
 版本要求的统一权威见 docs 仓 [`shared/BUILD-TOOLCHAIN.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/shared/BUILD-TOOLCHAIN.md)。
 
+构建容器内还屏蔽了节点坏环境：`GOPROXY` 经 `SDP_GOPROXY` 覆盖（默认 `https://goproxy.cn,direct`）、`go build` 加 `-buildvcs=false`、`Dockerfile` 的 apt 源经 `APT_MIRROR` 参数化（默认华为云镜像）；详见 BUILD-TOOLCHAIN §2。
+
 ## 模块地图（`internal/`）
 
 | 模块 | 职责 |
@@ -54,7 +56,7 @@
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `DB_DSN` | `postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable` | Postgres 连接串 |
-| `HUB_ADDR` | `:8080` | HTTP 监听地址 |
+| `HUB_ADDR` | `:8080` | 监听地址（部署态为 TLS：wss/https 同端口 8080；证书由 chart 经 `hub-tls` 注入 `TLSCertFile`/`TLSKeyFile`，未配置则回退明文） |
 | `KEYCLOAK_ISSUER` | **空** | 空 ⇒ `AuthDisabled()`（dev 姿态：auth 中间件与 org 组预置同时关闭）。须与 Keycloak 实际通告的 issuer **一字不差**（KC 26 通告短名 svc、剥默认端口） |
 | `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_SECRET` | `sdp-console` / `sdp-backend` / 空 | JWT `azp` 校验 / org 组预置的 Admin API 凭据 |
 | `PACKAGE_VERSION_CONSOLE/HUB/RUNNER` | `dev` | 版本矩阵；集群内由 chart 的 `package-versions` ConfigMap 注入 |

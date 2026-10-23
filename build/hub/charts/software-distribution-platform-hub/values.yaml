@@ -29,6 +29,10 @@ resources:
 # ⚠️ 一旦用某密钥写过凭据，换密钥即无法解密——设定后不可换。生产用 secretKeyRef 注入。
 credentialEncryptionKey: ""
 
+# 对外网关基址（ADR-0002 join-bundle 的 URL 真源）：scheme://host:port，
+# 如 https://www.sdpworkflow.com:8443（本地 kind）/ 云上 443。置空 => join-bundle 端点 501。
+publicUrl: ""
+
 # gateway 配置须与 runner chart 成对修改。
 # token 同时是 ADR-0001 首连自注册的铸发凭据：持有它拨号且带 X-Target-Vendor/Region
 # 的 runner 可让 hub 自动创建未注册 target（GitLab-Runner 式注册）；置空（dev 全收模式）
@@ -70,6 +74,9 @@ artifact:
   localRoot: /data/artifacts
   publicUrl: http://hub.sdp-workflow.svc:8080
   storage: 10Gi
+  # PVC 存储类：留空 = 不渲染 storageClassName，沿用集群默认 SC（kind 为 local-path）；
+  # 无默认 SC 的集群（如 CCE）须显式指定（例 csi-disk），否则 PVC 一直 Pending。
+  storageClassName: ""
 
 # G-1（2026-09-26）：执行 Job 的 ServiceAccount 名（runner 侧幂等 ensure SA+RBAC）。
 # 置空字符串回退旧行为（Job 用运行命名空间的 default SA，无部署权限）。
@@ -95,6 +102,9 @@ gatewayRoute:
   enabled: true
   name: sdp-gateway
   hostname: www.sdpworkflow.com
+  # BackendTLSPolicy 校验 hub 后端证书用的 CA secret（与 console 同构：generic 三 key）。
+  # 由 deploy-local.sh 基于 cert-build 的 hub 证书创建；生产由运维手工创建。
+  caSecretName: "hub-tls"
 
 # Keycloak 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork），
 # 已 vendor 进 charts/keycloak（固定版本，随 hub 一并安装）；console 本期仍 authDisabled，keycloak 先随 hub 起好。
@@ -109,8 +119,10 @@ keycloak:
   # 是**两个 realm 的两个账号**（master vs sdp），此处刻意用同一口令，dev 只记一套。
   # 生产改 KEYCLOAK_ADMIN_PASSWORD 为 valueFrom secretKeyRef（existingSecret）。
   image:
-    # 走 harbor（deploy-local.sh 预推 + 节点从 harbor 拉）：kind 节点直拉 quay.io 实测 6 分钟不完成。
-    # 与三个 chart 的 imageAddr 同域名（harbor.sdpworkflow.com，标准 443）三方一致。
+    # 可替换后端（与 basic chart 的 imageAddr 同级设计）：目标仓库不可达时整组覆盖，
+    # 例 --set keycloak.image.repository=swr.cn-north-4.myhuaweicloud.com/<project>/keycloak
+    # （tag 沿用此处版本；env/prod-deplyment/run.sh 提供 --keycloak-image 透传）。
+    # 默认走 harbor（deploy-local.sh 预推 + 节点从 harbor 拉，标准 443 三方一致）。
     repository: harbor.sdpworkflow.com/sdp/keycloak
     tag: "26.7.4"
   # 对外前端地址（KC26 hostname v2 支持完整 URL，含 scheme/port/路径）：设了它 issuer 与所有
@@ -125,15 +137,9 @@ keycloak:
       value: admin
     - name: KEYCLOAK_ADMIN_PASSWORD
       value: "sdp@12345"
-    # Keycloak 26 生产模式强制 hostname 校验（"hostname is not configured"启动失败）。
-    # dev 关掉：前端地址由 proxy.mode=xforwarded 的 X-Forwarded-* 推导（见下方 proxy 注释）。
-    # 生产必须改回：设 KC_HOSTNAME=<对外地址> 并去掉本变量。
     - name: KC_HOSTNAME_STRICT
       value: "false"
     {{- if .Values.hostname }}
-    # issuer 钉死对外地址（完整 URL 含端口）——不依赖 X-Forwarded-Port 推导。
-    # 注意：keycloakx 子 chart 的 tpl 上下文是子 chart 的 .Values（= 父 values 的 keycloak. 段），
-    # 故此处引用 .Values.hostname 而非 .Values.keycloak.hostname。
     - name: KC_HOSTNAME
       value: {{ .Values.hostname | quote }}
     {{- end }}
@@ -143,15 +149,26 @@ keycloak:
     - name: sdp-realm-import
       configMap:
         name: sdp-keycloak-realm
+    - name: keycloak-tls
+      secret:
+        secretName: hub-keycloak-tls
   extraVolumeMounts: |
     - name: sdp-realm-import
       mountPath: /opt/keycloak/data/import
       readOnly: true
+    - name: keycloak-tls
+      mountPath: /etc/keycloak-tls
+      readOnly: true
   args:
     # keycloakx 会以此替换镜像 CMD：等效 kc.sh start --import-realm；
     # 务必带 start 子命令，否则只剩 --import-realm 会因缺子命令启动失败。
+    # https 证书参数显式传入（官方 keycloak 镜像不识别 KEYCLOAK_HTTPS_* env，
+    # 那是 keycloakx 定制入口的行为）；证书由下方 extraVolumes 挂载到 /etc/keycloak-tls。
+    # 启用 https 后管理端口 9000 同为 HTTPS，探针协议见 http.internalScheme。
     - "start"
     - "--import-realm"
+    - "--https-certificate-file=/etc/keycloak-tls/tls.crt"
+    - "--https-certificate-key-file=/etc/keycloak-tls/tls.key"
   # 接本平台 postgres（deploy/manifests/10-postgres.yaml：sdp/sdp@postgres.sdp-workflow.svc:5432，trust 认证）。
   # chart 自动按 database.* 拼 KC_DB_URL_HOST/PORT/DATABASE/USERNAME，勿在 extraEnv 重复设 KC_DB_URL / KEYCLOAK_ADMIN。
   database:
@@ -185,3 +202,6 @@ keycloak:
   # 结构性隔离，不依赖路由优先级。改此处须同步 console 侧 issuer（auth.keycloakIssuerUrl）。
   http:
     relativePath: /keycloak
+    # 探针协议：args 显式启用 https 后管理端口 9000 同为 HTTPS，HTTP 探针会 EOF
+    # 导致 startup probe 失败循环重启，故与对外协议保持一致。
+    internalScheme: HTTPS

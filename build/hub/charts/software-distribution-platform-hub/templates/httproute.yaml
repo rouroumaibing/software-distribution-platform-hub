@@ -3,15 +3,16 @@
 # hub 不经 console nginx 反代（console 只服务前端 SPA，/api 由网关直连 hub）。
 #
 # 共用同一 Gateway（sdp-gateway）与同一对外主机 www.sdpworkflow.com；
-# 用 PathPrefix /api 把 /api/* 路由到 hub svc（ClusterIP，明文后端，与现状一致）。
+# 两条规则：/api（console/用户面 API）与 /gateway（runner 回流通道——集群外 runner
+# 经网关回连 hub，与 /api 同一 BackendTLSPolicy 后端）。
 # Gateway（GatewayClass/EnvoyProxy/Gateway）归运行方/本地脚手架（local-kind-dev/deploy/gateway-sdp.yaml，
 # 不随仓分发），本 chart 按名字引用（gatewayRoute.name，可 --set 覆盖）——保持独立可装：
 # 没有网关时本路由只是 Pending，不影响 hub 自身运行。
 # parentRefs 不指定 sectionName => 同时挂 http/https listener。
 #
-# hub 后端保持明文（与 console 不同：console 443 必须 TLS 故加 BackendTLSPolicy）；
-# 若将来要对 hub 后端做 mTLS 校验，再补 BackendTLSPolicy 引用 hub-tls（server 证书 SAN
-# 已覆盖 hub.<ns>.svc.cluster.local 链，见 cert-create.sh / CERTIFICATES.md）。
+# hub 后端以 TLS 提供（与 console 一致），故配 BackendTLSPolicy 引用 hub-tls 校验；
+# server 证书 SAN 已覆盖 hub.<ns>.svc.cluster.local 链（见 cert-create.sh / CERTIFICATES.md）。
+# 后端 TLS 由 deployment 挂载 hub-tls + HUB_TLS_* 环境变量开启（见 deployment-hub.yaml）。
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -30,4 +31,36 @@ spec:
       backendRefs:
         - name: {{ .Values.basic.component }}
           port: {{ .Values.service.externPort }}
+    # runner 回流通道（集群外 runner 经网关回连 hub；envoy 对长连 WS 的 idle timeout
+    # 由 EnvoyProxy 侧调优，与 /api 共用同一后端与 BackendTLSPolicy）。
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /gateway
+      backendRefs:
+        - name: {{ .Values.basic.component }}
+          port: {{ .Values.service.externPort }}
+{{- end }}
+---
+# hub 后端 BackendTLSPolicy：与 console 同构（Gateway API 正解替代 nginx backend-protocol）。
+# envoy 用 hub-tls 的 ca.crt 校验 hub 后端 TLS 证书。validation.hostname 取后端 svc FQDN，
+# cert-create.sh 的 hub 证书 SAN 已覆盖 hub.<ns>.svc.cluster.local 链（DNS.5）。
+# hub 后端 TLS 由 deployment 挂载 hub-tls + HUB_TLS_* 环境变量开启（见 deployment-hub.yaml）。
+{{- if .Values.gatewayRoute.enabled }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: hub
+  namespace: {{ .Values.namespace }}
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: {{ .Values.basic.component }}
+  validation:
+    hostname: {{ .Values.basic.component }}.{{ .Values.namespace }}.svc.cluster.local
+    caCertificateRefs:
+      - group: ""
+        kind: Secret
+        name: {{ .Values.gatewayRoute.caSecretName }}
 {{- end }}
