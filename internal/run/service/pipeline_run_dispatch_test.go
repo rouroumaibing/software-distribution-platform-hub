@@ -184,6 +184,22 @@ func (s *fakeDispatchStore) LatestByRun(pipelineRunID uuid.UUID) (*models.Dispat
 	return found, nil
 }
 
+// ReleaseHeld flips a held (O-41 queued) job back to pending; returns rows
+// affected (0 when the job is not in held state).
+func (s *fakeDispatchStore) ReleaseHeld(pipelineRunID uuid.UUID) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int64
+	for _, id := range s.order {
+		j := s.jobs[id]
+		if j.PipelineRunID == pipelineRunID && j.State == models.DispatchJobHeld {
+			j.State = models.DispatchJobPending
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (s *fakeDispatchStore) all() []models.DispatchJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()

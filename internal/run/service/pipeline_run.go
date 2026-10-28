@@ -62,6 +62,9 @@ type DispatchJobStore interface {
 	// LatestByRun returns the most recently created dispatch job for a run,
 	// used by Redispatch to copy the last payload for a retry.
 	LatestByRun(pipelineRunID uuid.UUID) (*models.DispatchJob, error)
+	// ReleaseHeld flips a held (O-41 queued) job back to pending so the
+	// sweeper/drain delivers it once the run is promoted. Returns rows affected.
+	ReleaseHeld(pipelineRunID uuid.UUID) (int64, error)
 }
 
 // PipelineRunStore is the persistence surface over pipeline_runs. Declared as
@@ -76,6 +79,16 @@ type PipelineRunStore interface {
 	// createdAfter 支持 N-1 运行时间窗过滤（STATUS §2 #15）。
 	// triggeredBy 支持运行中心触发人筛选（console P2，2026-10-08）。
 	FindAll(p common.Pagination, phase string, componentID uuid.UUID, createdAfter *time.Time, triggeredBy string) ([]models.PipelineRun, int64, error)
+	// FindTimedOut returns non-terminal runs whose timeout has elapsed as of
+	// now (O-39): timeout_seconds>0 AND COALESCE(start_time, created_at) +
+	// timeout_seconds has passed. Used by SweepRunTimeouts.
+	FindTimedOut(now time.Time) ([]models.PipelineRun, error)
+	// CountActiveByPipeline counts runs of a pipeline in any of the given
+	// phases (empty phases → 0). Used by the O-41 concurrency guard.
+	CountActiveByPipeline(pipelineID uuid.UUID, phases []string) (int64, error)
+	// FindQueued returns PendingQueue runs (O-41), oldest first, for the
+	// background promoter to wake up as capacity frees.
+	FindQueued(limit int) ([]models.PipelineRun, error)
 }
 
 // TaskRunStore is the persistence surface over task_runs.
@@ -166,6 +179,11 @@ type PipelineRunService struct {
 	approvalRepo     PipelineApprovalStore
 	componentMeta    ComponentMetaStore
 	environmentMeta  EnvironmentMetaStore
+
+	// runConcurrencyLimit is the O-41 同 pipeline 最大活跃 run 数（上限 N），
+	// 0 = 用 DefaultRunConcurrencyLimit（run_concurrency.go）。Setter-wired，
+	// 与 productionPolicy 同款：不改构造签名、不动既有测试 fixture。
+	runConcurrencyLimit int
 
 	// productionPolicy is the optional 生产强审批 guard (B-11). Wired with a
 	// setter so the constructor signature — and every existing test fixture —
@@ -355,6 +373,26 @@ func (s *PipelineRunService) triggerFanout(pipelineID uuid.UUID, req *models.Tri
 // run — it stays Pending and the job is redelivered later by DrainTarget /
 // SweepPending. Only a failure to persist the run/job itself is fatal.
 func (s *PipelineRunService) createRun(pipelineID, targetID uuid.UUID, spec *runnerapi.PipelineRunSpec, ns string, paramsJSON []byte, version int, req *models.TriggerRequest) (*models.PipelineRun, error) {
+	// O-41 同 pipeline 并发策略（F4.2）：Forbid 在任何持久化前拒绝（409），
+	// Queue 超上限时把新 run 直接落成 PendingQueue（dispatch job 用 held 态，
+	// 由 SweepQueued 在前序 run 终态后唤醒）。策略/上限读取失败即触发失败。
+	policy, err := s.concurrencyPolicyOf(pipelineID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.guardConcurrency(pipelineID, policy); err != nil {
+		return nil, err
+	}
+	phase := runnerapi.PipelineRunPending
+	if policy == pipelinemodels.ConcurrencyQueue {
+		queued, qerr := s.shouldQueue(pipelineID)
+		if qerr != nil {
+			return nil, qerr
+		}
+		if queued {
+			phase = runnerapi.PipelineRunPendingQueue
+		}
+	}
 	run := &models.PipelineRun{
 		PipelineID:      pipelineID,
 		TargetID:        targetID,
@@ -363,7 +401,8 @@ func (s *PipelineRunService) createRun(pipelineID, targetID uuid.UUID, spec *run
 		CommitSHA:       req.CommitSHA,
 		Params:          datatypes.JSON(paramsJSON),
 		PipelineVersion: version,
-		Phase:           runnerapi.PipelineRunPending,
+		Phase:           phase,
+		TimeoutSeconds:  spec.TimeoutSeconds,
 		TriggeredBy:     req.TriggeredBy,
 		TriggerSource:   triggerSourceOf(req),
 	}
@@ -794,6 +833,9 @@ func (s *PipelineRunService) buildSpec(pipelineID uuid.UUID, req *models.Trigger
 		ProjectID:       p.ComponentID.String(),
 		TargetNamespace: req.TargetNamespace,
 		TriggeredBy:     req.TriggeredBy,
+		// O-39：触发请求可选携带运行级超时，0 = 不限（createRun 落
+		// pipeline_runs.timeout_seconds，SweepRunTimeouts 据此清扫）。
+		TimeoutSeconds: req.TimeoutSeconds,
 	}
 	// G-1：执行 Job 必须带部署权限的 SA。runner 侧会在运行命名空间幂等
 	// ensure 该 SA + 最小部署 Role/RoleBinding（见 runner ensureRunRBAC）。
@@ -943,7 +985,9 @@ func (s *PipelineRunService) enqueueDispatch(runID, targetID uuid.UUID, apply *r
 		PipelineRunID: runID,
 		TargetID:      targetID,
 		Payload:       payload,
-		State:         models.DispatchJobPending,
+		// O-41：PendingQueue run 的首个 dispatch job 落 held 态，SweepPending /
+		// DrainTarget 跳过它，直到 SweepQueued 唤醒 run 时释放为 pending。
+		State: s.dispatchStateForRun(runID),
 	}
 	if err := s.dispatchRepo.Create(job); err != nil {
 		return err

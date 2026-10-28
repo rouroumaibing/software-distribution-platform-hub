@@ -38,6 +38,12 @@ type TriggerRequest struct {
 	// CommitSHA records the resolved commit for audit display.
 	CommitSHA string `json:"commitSha,omitempty"`
 
+	// TimeoutSeconds bounds the whole run (O-39 运行治理): the hub's
+	// SweepRunTimeouts fails the run with PipelineRunTimeout once
+	// COALESCE(start_time, created_at) + this many seconds has passed and
+	// the run is still non-terminal. 0 (default) = no run-level limit.
+	TimeoutSeconds int64 `json:"timeoutSeconds,omitempty"`
+
 	// TriggeredBy is the hub-side user/system identity starting the run.
 	TriggeredBy string `json:"triggeredBy,omitempty"`
 

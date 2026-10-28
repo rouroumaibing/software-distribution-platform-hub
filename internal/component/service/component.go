@@ -53,6 +53,10 @@ type ComponentService struct {
 	// 用 setter 注入而非构造参数：8 处既有测试用 4 参构造，改签名会全部波及；
 	// 且级联器是"装配增强"，nil 时行为退回单表软删（脱库单测路径）。
 	cascader *cascade.Deleter
+	// artifactSource 是 O-38 取数依赖：枚举组件可部署版本（canary 回滚目标来源）。
+	// setter 注入（同 WithCascade 手法），nil 时 ListDeployableVersions 退化为空列表，
+	// 不影响既有 4 参构造与脱库单测。
+	artifactSource ArtifactVersionSource
 }
 
 func NewComponentService(
@@ -72,6 +76,12 @@ func NewComponentService(
 // WithCascade 装配域内级联删除器（main.go 在 DB 就绪后调用）。
 func (s *ComponentService) WithCascade(d *cascade.Deleter) *ComponentService {
 	s.cascader = d
+	return s
+}
+
+// WithArtifactSource 装配 O-38 可部署版本取数依赖（main.go 在 DB 就绪后调用）。
+func (s *ComponentService) WithArtifactSource(src ArtifactVersionSource) *ComponentService {
+	s.artifactSource = src
 	return s
 }
 

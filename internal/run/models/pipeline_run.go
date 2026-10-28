@@ -35,8 +35,13 @@ type PipelineRun struct {
 	// Records which pipelines.version this run's DAG was built from.
 	PipelineVersion int `json:"pipelineVersion"`
 
-	Phase       runnerapi.PipelineRunPhase `gorm:"size:32;not null;default:Pending;index" json:"phase"`
-	TriggeredBy string                     `gorm:"size:128" json:"triggeredBy,omitempty"`
+	Phase runnerapi.PipelineRunPhase `gorm:"size:32;not null;default:Pending;index" json:"phase"`
+	// TimeoutSeconds bounds the whole run (O-39, F4.3 运行治理): 0 = no limit.
+	// A started (or, if never started, created) run exceeding it is swept to
+	// failed(reason=PipelineRunTimeout) by the background ticker. Mirrors the
+	// task-level timeoutSeconds semantics at the run level.
+	TimeoutSeconds int64  `gorm:"not null;default:0" json:"timeoutSeconds,omitempty"`
+	TriggeredBy    string `gorm:"size:128" json:"triggeredBy,omitempty"`
 	// TriggerSource is the invocation channel (manual/cron/webhook/event) —
 	// the structured half of the 运行列表「触发方式」column (ui-12 §4.3).
 	TriggerSource string `gorm:"size:16;not null;default:manual" json:"triggerSource,omitempty"`

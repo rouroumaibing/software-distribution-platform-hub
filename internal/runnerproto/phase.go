@@ -7,9 +7,16 @@ const (
 	PipelineRunPending         PipelineRunPhase = "Pending"
 	PipelineRunRunning         PipelineRunPhase = "Running"
 	PipelineRunWaitingApproval PipelineRunPhase = "WaitingApproval"
-	PipelineRunSucceeded       PipelineRunPhase = "Succeeded"
-	PipelineRunFailed          PipelineRunPhase = "Failed"
-	PipelineRunCancelled       PipelineRunPhase = "Cancelled"
+	// PipelineRunPendingQueue is the O-41 queued state: the run was created
+	// but its dispatch job is held because the pipeline's concurrency policy
+	// is queue and capacity was full. It is neither active nor terminal; a
+	// background sweep promotes it to Pending (releasing the held job) once an
+	// active run of the same pipeline finishes. The Runner never sees this
+	// phase — promotion happens before delivery.
+	PipelineRunPendingQueue PipelineRunPhase = "PendingQueue"
+	PipelineRunSucceeded    PipelineRunPhase = "Succeeded"
+	PipelineRunFailed       PipelineRunPhase = "Failed"
+	PipelineRunCancelled    PipelineRunPhase = "Cancelled"
 )
 
 // TaskRunPhase represents the lifecycle phase of a single TaskRun.

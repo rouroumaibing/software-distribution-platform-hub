@@ -54,8 +54,27 @@ func NewPipelineService(repo PipelineStore, versions VersionPublisher, runRepo P
 }
 
 func (s *PipelineService) Create(p *models.Pipeline) error {
+	if err := normalizeConcurrencyPolicy(p); err != nil {
+		return err
+	}
 	p.Version = 1
 	return s.repo.Create(p)
+}
+
+// normalizeConcurrencyPolicy validates the O-41 same-pipeline concurrency
+// policy: empty falls back to 'allow' (legacy behavior); anything other than
+// the three enum values is a 400.
+func normalizeConcurrencyPolicy(p *models.Pipeline) error {
+	switch p.ConcurrencyPolicy {
+	case "":
+		p.ConcurrencyPolicy = models.ConcurrencyAllow
+	case models.ConcurrencyAllow, models.ConcurrencyQueue, models.ConcurrencyForbid:
+	default:
+		return common.DomainErrorWithReasons(common.KindPipeline, http.StatusBadRequest, 8,
+			"Invalid Concurrency Policy",
+			"concurrencyPolicy 必须是 allow / queue / forbid 之一")
+	}
+	return nil
 }
 
 func (s *PipelineService) Get(id uuid.UUID) (*models.Pipeline, error) { return s.repo.GetByID(id) }
@@ -103,6 +122,10 @@ func (s *PipelineService) Update(id uuid.UUID, p *models.Pipeline) error {
 	existing.Kind = p.Kind
 	existing.Description = p.Description
 	existing.Params = p.Params
+	if err := normalizeConcurrencyPolicy(p); err != nil {
+		return err
+	}
+	existing.ConcurrencyPolicy = p.ConcurrencyPolicy
 	if s.versions != nil {
 		if err := s.repo.Update(existing); err != nil {
 			return err

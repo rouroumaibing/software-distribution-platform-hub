@@ -105,6 +105,10 @@ gatewayRoute:
   # BackendTLSPolicy 校验 hub 后端证书用的 CA secret（与 console 同构：generic 三 key）。
   # 由 deploy-local.sh 基于 cert-build 的 hub 证书创建；生产由运维手工创建。
   caSecretName: "hub-tls"
+  # /gateway 规则的 stream idle 超时（BackendTrafficPolicy，挂该 rule）：runner 回流
+  # WS 长连允许的最大静默期，超过即被网关掐断。默认继承 listener 5m，显式拉长为 1h
+  # 消除长 idle 掐断（runner 重连对账自愈，但抖动 + 事件窗口可免则免）。
+  streamIdleTimeout: 3600s
 
 # Keycloak 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork），
 # 已 vendor 进 charts/keycloak（固定版本，随 hub 一并安装）；console 本期仍 authDisabled，keycloak 先随 hub 起好。

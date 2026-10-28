@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,14 +20,47 @@ func NewTargetService(repo *repository.TargetRepository) *TargetService {
 	return &TargetService{repo: repo}
 }
 
-func (s *TargetService) Create(tg *models.Target) error           { return s.repo.Create(tg) }
+func (s *TargetService) Create(tg *models.Target) error {
+	if err := validateAccessMode(tg); err != nil {
+		return err
+	}
+	return s.repo.Create(tg)
+}
 func (s *TargetService) Get(id uuid.UUID) (*models.Target, error) { return s.repo.GetByID(id) }
 func (s *TargetService) List(p common.Pagination) ([]models.Target, int64, error) {
 	return s.repo.List(p)
 }
 func (s *TargetService) Update(id uuid.UUID, tg *models.Target) error {
 	tg.ID = id
+	if err := validateAccessMode(tg); err != nil {
+		return err
+	}
 	return s.repo.Update(tg)
+}
+
+// validateAccessMode enforces the O-40 access-mode contract: agent is the
+// default and needs no credential; kubeconfig / ssh must carry a non-empty
+// credentialRef (an opaque reference to the upstream credential store — its
+// existence is verified there, not here). agent targets ignore credentialRef.
+// Returns a coded 400 so the HTTP layer maps it without a generic 500.
+func validateAccessMode(tg *models.Target) error {
+	if tg.AccessMode == "" {
+		tg.AccessMode = models.TargetAccessModeAgent
+	}
+	switch tg.AccessMode {
+	case models.TargetAccessModeAgent, models.TargetAccessModeKubeconfig, models.TargetAccessModeSSH:
+	default:
+		return common.ErrBadRequest.WithError(
+			fmt.Errorf("invalid access_mode %q (want agent|kubeconfig|ssh)", tg.AccessMode))
+	}
+	if tg.AccessMode == models.TargetAccessModeAgent {
+		return nil
+	}
+	if tg.CredentialRef == nil || *tg.CredentialRef == "" {
+		return common.ErrBadRequest.WithError(
+			fmt.Errorf("access_mode %q requires credentialRef", tg.AccessMode))
+	}
+	return nil
 }
 func (s *TargetService) Delete(id uuid.UUID) error { return s.repo.Delete(id) }
 

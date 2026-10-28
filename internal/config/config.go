@@ -123,6 +123,17 @@ type Config struct {
 	// each row costs one blocking object-store call.
 	ArtifactGCBatch int
 
+	// RunSweepInterval is how often the run background loop fires: O-39
+	// run-level timeout sweeps and O-41 queued-run promotion (set
+	// RUN_SWEEP_INTERVAL=60 for a minute pass). **Zero disables the loop** —
+	// 同 ArtifactGCInterval：会改运行状态的作业不由部署悄悄打开。
+	RunSweepInterval time.Duration
+
+	// RunConcurrencyLimit is the O-41 max active runs per pipeline before a
+	// 'queue' policy parks new runs as PendingQueue. Zero falls back to
+	// run service DefaultRunConcurrencyLimit.
+	RunConcurrencyLimit int
+
 	// --- §5.2 邮件渠道（决策 #5 收敛：本期仅邮箱） -------------------------
 	// SMTP 全空 = 渠道未配置：订阅端点可用、分发为受控 no-op（NoopMailer），
 	// 站内通知中心不受影响。
@@ -211,6 +222,9 @@ func Load() *Config {
 		// 默认 0 = 关闭：保留期 GC 会**删**制品，必须显式开启。
 		ArtifactGCInterval: time.Duration(getenvInt("ARTIFACT_GC_INTERVAL", 0)) * time.Second,
 		ArtifactGCBatch:    getenvInt("ARTIFACT_GC_BATCH", 0),
+		// 默认 0 = 关闭（见字段注释）：O-39 超时清扫 + O-41 排队唤醒显式开启。
+		RunSweepInterval:    time.Duration(getenvInt("RUN_SWEEP_INTERVAL", 0)) * time.Second,
+		RunConcurrencyLimit: getenvInt("RUN_CONCURRENCY_LIMIT", 0),
 
 		// §5.2 邮件渠道：全空 = 渠道未配置（订阅可存、分发 no-op）。
 		SMTPHost:     getenv("SMTP_HOST", ""),

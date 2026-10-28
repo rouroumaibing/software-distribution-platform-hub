@@ -158,3 +158,38 @@ func countActiveByService(db *gorm.DB, serviceID uuid.UUID, phases []string) (in
 	}
 	return n, nil
 }
+
+// FindTimedOut returns non-terminal runs whose O-39 run-level timeout has
+// elapsed as of now: timeout_seconds>0 and
+// COALESCE(start_time, created_at) + timeout_seconds < now(), excluding any
+// terminal phase. The hub background ticker marks each one failed.
+//
+// 用 COALESCE(start_time, created_at) 同时覆盖"已启动但卡死"与"从未启动、卡在
+// Pending（target 离线）"两种长尾 —— 二者都占用 target/配额，都应被超时回收。
+func (r *PipelineRunRepository) FindTimedOut(now time.Time) ([]models.PipelineRun, error) {
+	const terminal = "('Succeeded','Failed','Error','Cancelled','Canceled')"
+	var runs []models.PipelineRun
+	err := r.DB.
+		Where("timeout_seconds > 0").
+		Where("phase NOT IN "+terminal).
+		Where("COALESCE(start_time, created_at) + make_interval(secs => timeout_seconds) < ?", now).
+		Find(&runs).Error
+	if err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// FindQueued returns O-41 PendingQueue runs, oldest first, so the background
+// sweep can promote them to Pending as capacity frees. limit<=0 means unbounded.
+func (r *PipelineRunRepository) FindQueued(limit int) ([]models.PipelineRun, error) {
+	var runs []models.PipelineRun
+	q := r.DB.Where("phase = ?", "PendingQueue").Order("created_at asc")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if err := q.Find(&runs).Error; err != nil {
+		return nil, err
+	}
+	return runs, nil
+}

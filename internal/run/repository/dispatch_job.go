@@ -93,3 +93,13 @@ func (r *DispatchJobRepository) LatestByRun(pipelineRunID uuid.UUID) (*models.Di
 	}
 	return &j, nil
 }
+
+// ReleaseHeld flips a held (O-41 queued) job back to pending so the sweeper or
+// DrainTarget delivers it once the run is promoted to Pending. Returns the number
+// of rows changed (0 if the job was not held, e.g. already delivered).
+func (r *DispatchJobRepository) ReleaseHeld(pipelineRunID uuid.UUID) (int64, error) {
+	res := r.DB.Model(&models.DispatchJob{}).
+		Where("pipeline_run_id = ? AND state = ?", pipelineRunID, models.DispatchJobHeld).
+		Update("state", models.DispatchJobPending)
+	return res.RowsAffected, res.Error
+}

@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ func (h *ComponentHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.PUT("/components/:id", h.Update)
 	rg.DELETE("/components/:id", h.Delete)
 	rg.GET("/services/:id/components", h.ListByService)
+	rg.GET("/components/:id/versions", h.ListDeployableVersions)
 }
 
 // Create stamps the component owner from the authenticated user when the
@@ -119,4 +121,37 @@ func (h *ComponentHandler) ListByService(c *gin.Context) {
 		return
 	}
 	common.OKPaged(c, items, total, p)
+}
+
+// ListDeployableVersions handles GET /components/:id/versions (O-38): the set of
+// released versions a canary rollback can target. Source is the artifact store.
+// The list is capped by ?limit= with default 50 and upper bound 100, mirroring
+// notification.List's "同型夹取" — a pure display cap, not an offset window.
+//
+//	@Summary	列出组件可部署版本
+//	@Tags		components
+//	@Produce	json
+//	@Param		id		path		string	true	"组件 ID"
+//	@Param		limit	query		int		false	"返回上限（默认 50，最大 100）"
+//	@Success	200		{object}	common.Envelope{data=[]service.DeployableVersion}
+//	@Router		/components/{id}/versions [get]
+func (h *ComponentHandler) ListDeployableVersions(c *gin.Context) {
+	componentID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	items, err := h.svc.ListDeployableVersions(componentID, limit)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OK(c, items)
 }

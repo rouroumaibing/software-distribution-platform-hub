@@ -36,6 +36,45 @@ func (r *ArtifactRepository) FindByComponentID(componentID uuid.UUID, p common.P
 	return r.List(p, func(db *gorm.DB) *gorm.DB { return liveForComponent(db, componentID) })
 }
 
+// defaultDeployableVersionFetchCap bounds how many rows ListDeployableVersions
+// reads before de-duplicating by version in Go. It is intentionally larger than
+// the display limit so that a component with many artifacts spread across few
+// versions still surfaces every distinct version; see ListDeployableVersions.
+const defaultDeployableVersionFetchCap = 2000
+
+// ListDeployableVersions returns one representative artifact per distinct version
+// for the component, using the **live** predicate (excludes pending_deletion) so
+// a version mid-cleanup is never offered as a rollback target (O-38).
+//
+// 去重放在 Go 侧而非 SQL：每个版本"最近一条"在 DB 层要么靠 Postgres 专有
+// DISTINCT ON、要么靠嵌套子查询，都会把单测绑死到具体方言。组件版本数是有界的，
+// 拉取 created_at desc 后按 version 保留首条（=最新）即可，简单且方言无关。
+func (r *ArtifactRepository) ListDeployableVersions(componentID uuid.UUID, limit int) ([]models.Artifact, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var rows []models.Artifact
+	if err := liveForComponent(r.DB, componentID).
+		Order("created_at desc").
+		Limit(defaultDeployableVersionFetchCap).
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(rows))
+	out := make([]models.Artifact, 0, len(rows))
+	for _, a := range rows {
+		if seen[a.Version] {
+			continue
+		}
+		seen[a.Version] = true
+		out = append(out, a)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // ArtifactSearchFilter is the §6.2 跨组件检索的过滤参数。零值字段不进谓词。
 type ArtifactSearchFilter struct {
 	Name         string // 版本 ILIKE（复用字段：检索主键是 version；名称=storage key 尾段）

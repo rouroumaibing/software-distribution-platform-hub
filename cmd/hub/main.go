@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,6 +67,7 @@ import (
 	pipelinehandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/handler"
 	pipelinerepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/repository"
 	pipelinesvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/service"
+	retentionsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/retention"
 	runhandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/handler"
 	runrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/repository"
 	runsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/service"
@@ -86,6 +89,27 @@ import (
 // @securityDefinitions.apikey  BearerAuth
 // @in              header
 // @name            Authorization
+
+// getenvInt reads an integer env var, falling back to def when unset/invalid.
+func getenvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// getenvFloat reads a float env var, falling back to def when unset/invalid.
+func getenvFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
 func main() {
 	applog.Init()
 	defer applog.Flush()
@@ -165,12 +189,14 @@ func main() {
 	// Without it the hub stays a passive Resource Server and skips group sync
 	// (dev mode). The provisioner is best-effort everywhere it is used, so a
 	// Keycloak outage never blocks org creation or hub startup.
+	var kcAdmin *keycloak.Client
 	var orgGroupProvisioner keycloak.GroupProvisioner
 	if !cfg.AuthDisabled() {
 		if cfg.KeycloakAdminClientSecret == "" {
-			applog.Warnf("hub: KEYCLOAK_ADMIN_CLIENT_SECRET not set — org carrier groups will not be synced to Keycloak")
+			applog.Warnf("hub: KEYCLOAK_ADMIN_CLIENT_SECRET not set — org carrier groups will not be synced to Keycloak and the directory proxy stays unmounted")
 		} else {
-			orgGroupProvisioner = keycloak.NewClient(cfg.KeycloakIssuer, cfg.KeycloakAdminClientID, cfg.KeycloakAdminClientSecret)
+			kcAdmin = keycloak.NewClient(cfg.KeycloakIssuer, cfg.KeycloakAdminClientID, cfg.KeycloakAdminClientSecret)
+			orgGroupProvisioner = kcAdmin
 		}
 	}
 	orgSvc := orgsvc.NewOrgService(orgRepo, serviceTreeRepo, orgGroupProvisioner)
@@ -184,7 +210,7 @@ func main() {
 	// 「校验与删除不在同一事务」缺口的落地（活跃运行判定仍在各 service）。
 	cascadeDel := cascade.NewDeleter(gdb)
 	catalogSvc := catalogsvc.NewServiceService(catalogRepo, pipelineRunRepo, serviceTreeRepo).WithCascade(cascadeDel)
-	componentSvc := componentsvc.NewComponentService(componentRepo, bindingRepo, componentRoleRepo, pipelineRunRepo).WithCascade(cascadeDel)
+	componentSvc := componentsvc.NewComponentService(componentRepo, bindingRepo, componentRoleRepo, pipelineRunRepo).WithCascade(cascadeDel).WithArtifactSource(artifactRepo)
 	componentConfigSvc := componentsvc.NewComponentConfigService(componentConfigRepo, envRepo)
 	// 整环境配置版本化（ui-12 §4.1/§4.2 / N-18/N-19）：配置每次变更自动捕获
 	// 快照版本；回滚/对比走 ConfigVersionHandler。
@@ -300,6 +326,24 @@ func main() {
 		}
 		applog.Infof("hub: artifact retention GC enabled every %s (batch=%d, objectStore=%v)",
 			cfg.ArtifactGCInterval, gcBatch, gcDeleter != nil)
+	}
+
+	// --- 数据生命周期 GC（O-37）：审计日志 / 运行日志 / 制品版本保留与滚删 --------
+	// 默认全关：三个阈值（HUB_AUDIT_LOG_RETENTION_DAYS / HUB_RUN_LOG_RETENTION_DAYS /
+	// HUB_ARTIFACT_VERSION_RETENTION）任一 >0 才删对应数据；删数据的作业绝不由一次
+	// 部署悄悄打开。运行日志仅删终态+超龄，非终态一律不动（防误删进行中数据）。
+	// HUB_RETENTION_GC_INTERVAL=0（默认）关闭整个循环。
+	retentionGC := retentionsvc.NewRetentionGC(
+		gdb,
+		getenvInt("HUB_AUDIT_LOG_RETENTION_DAYS", 0),
+		getenvInt("HUB_RUN_LOG_RETENTION_DAYS", 0),
+		getenvInt("HUB_ARTIFACT_VERSION_RETENTION", 0),
+		getenvInt("HUB_RETENTION_GC_BATCH", 0),
+	)
+	go retentionGC.Run(ctx, time.Duration(getenvInt("HUB_RETENTION_GC_INTERVAL", 0))*time.Second)
+	if !retentionGC.Disabled() {
+		applog.Infof("hub: data-lifecycle retention GC enabled (auditDays=%d runDays=%d artifactVersions=%d)",
+			retentionGC.AuditLogDays, retentionGC.RunLogDays, retentionGC.ArtifactVersions)
 	}
 
 	// --- gateway (Hub side of the Runner long connection) -------------------
@@ -449,6 +493,9 @@ func main() {
 	runSvc.SetJobServiceAccount(cfg.JobServiceAccount)
 	// B-11 审批超时：把超过任务时限仍未决策的审批自动拒绝（用户故事 Epic 8）。
 	go runSvc.RunApprovalTimeouts(ctx, cfg.ApprovalTimeoutInterval)
+	// O-39 运行级超时清扫 + O-41 排队唤醒：默认 0 = 关闭（RUN_SWEEP_INTERVAL）。
+	runSvc.SetRunConcurrencyLimit(cfg.RunConcurrencyLimit)
+	go runSvc.RunBackground(ctx, cfg.RunSweepInterval)
 
 	// --- 触发器（ui-12 §4.3 / N-21）：cron 调度 + webhook + run.finished 事件 ---
 	triggerRepo := pipelinerepo.NewTriggerRepository(gdb)
@@ -546,6 +593,10 @@ func main() {
 	metrics.SetBuildInfo("dev", "dev", runtime.Version())
 	r.GET("/metrics", metrics.GinHandler())
 
+	// 防御纵深标准件（O-34/O-35）：全站安全响应头。挂根引擎，覆盖 API、网关与
+	// /metrics 全部路径；纯注入、零状态、不挡请求。
+	r.Use(middleware.SecurityHeaders())
+
 	api := r.Group("/api/v1")
 
 	if auth != nil {
@@ -563,6 +614,20 @@ func main() {
 	// 组件级审计下沉) — components are their own owner, pipelines/runs resolve
 	// through the same ComponentLocator the RBAC guards use.
 	api.Use(middleware.AuditMiddleware(auditReporter, permissionsvc.NewComponentLocator(pipelineRepo, pipelineRunRepo)))
+
+	// 认证接口限流（O-34）：单副本 in-memory 令牌桶，按客户端 IP 限速，防暴破。
+	// 多副本下不跨副本共享计数（已在 ratelimit.go 注记），需全局限流时前置 redis。
+	// HUB_RATE_LIMIT_RPS=0（默认）即关闭。
+	if rps := getenvFloat("HUB_RATE_LIMIT_RPS", 0); rps > 0 {
+		rl := middleware.NewRateLimit(rps, getenvInt("HUB_RATE_LIMIT_BURST", int(rps*2)+1))
+		go rl.StartSweeper(10 * time.Minute)
+		api.Use(rl.Handler())
+	}
+	// CORS（O-34）：默认空白名单 = 不处理（同源场景）。仅当显式配置 HUB_CORS_ORIGINS
+	// 时才对白名单域回显 Access-Control-*，避免配错阻断前端或误开通任意域。
+	if origins := os.Getenv("HUB_CORS_ORIGINS"); origins != "" {
+		api.Use(middleware.CORS(strings.Split(origins, ",")))
+	}
 
 	// Org / target / catalog / component management — no component-scoped
 	// permission check in this M1 wiring.
@@ -617,6 +682,14 @@ func main() {
 	resourceOwnershipHandler.RegisterRoutes(platformGroup)
 	roleMappingHandler.RegisterRoutes(platformGroup)
 	permRequestHandler.RegisterRoutes(platformGroup)
+	// 目录代理（D3 重估后的管理面，ui-05 §7.14 M1 / ui-09 N-34）：console 的
+	// 用户/组目录选择器与账号管理经 hub 代理 Keycloak Admin REST，前端不持
+	// Admin 凭据。挂本组（user:manage）；/org: 前缀组对代理只读（orgsvc 专属，
+	// handler 侧强制）。KC 未配置（dev 模式 / 无 secret）时不挂载，目录选择器
+	// 退化为手输主体（§7.14 M2 兜底）。
+	if kcAdmin != nil {
+		permhandler.NewKeycloakDirectoryHandler(kcAdmin).RegisterRoutes(platformGroup)
+	}
 	// STATUS #19 + ui-12 5.4 组件级审计下沉：审计读端点
 	// 双通道 —— 平台管理员（user:manage）全量可查；组件管理员（component:
 	// manage）须携带 ?componentId= 且查询被 handler 强制钳到该组件。

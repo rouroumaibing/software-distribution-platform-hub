@@ -21,6 +21,10 @@ const (
 	DispatchJobFailed DispatchJobState = "failed"
 	// DispatchJobDead means retries are exhausted; the job is retired.
 	DispatchJobDead DispatchJobState = "dead"
+	// DispatchJobHeld means the run is O-41 queued: the job is persisted (with
+	// its full payload) but must not be delivered until the run is promoted to
+	// Pending. The background sweep flips it back to pending on promotion.
+	DispatchJobHeld DispatchJobState = "held"
 )
 
 // DispatchJob is the durable record of one attempt to deliver a PipelineRun's

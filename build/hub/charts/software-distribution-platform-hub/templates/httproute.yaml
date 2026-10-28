@@ -31,9 +31,11 @@ spec:
       backendRefs:
         - name: {{ .Values.basic.component }}
           port: {{ .Values.service.externPort }}
-    # runner 回流通道（集群外 runner 经网关回连 hub；envoy 对长连 WS 的 idle timeout
-    # 由 EnvoyProxy 侧调优，与 /api 共用同一后端与 BackendTLSPolicy）。
-    - matches:
+    # runner 回流通道（集群外 runner 经网关回连 hub；长 idle 超时由下方
+    # BackendTrafficPolicy 按本 rule name 精确声明，与 /api 共用同一后端与
+    # BackendTLSPolicy）。
+    - name: gateway
+      matches:
         - path:
             type: PathPrefix
             value: /gateway
@@ -63,4 +65,26 @@ spec:
       - group: ""
         kind: Secret
         name: {{ .Values.gatewayRoute.caSecretName }}
+{{- end }}
+---
+# O-42 G1：/gateway（runner 回流 WS 长连）的显式超时 Policy。只声明 streamIdleTimeout
+# （一条流允许的最大静默期，WS 升级后的关键超时；connectionIdleTimeout/requestTimeout
+# 等保持 EG 默认，不对 /api 语义施加额外限制）。sectionName 精确挂 /gateway 规则
+# （route rule 级 = 最高优先级），/api 规则不受影响。字段落 EG v1.6 BackendTrafficPolicy
+# timeout.http.*（字段面以 v1.6 文档核对为准）。默认 1h，可 --set 覆盖。
+{{- if .Values.gatewayRoute.enabled }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: hub-gateway-ws-idle
+  namespace: {{ .Values.namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: hub
+      sectionName: gateway
+  timeout:
+    http:
+      streamIdleTimeout: {{ .Values.gatewayRoute.streamIdleTimeout }}
 {{- end }}

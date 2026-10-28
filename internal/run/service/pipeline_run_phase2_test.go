@@ -71,6 +71,63 @@ func (f *fakePipelineRunStore) FindAll(p common.Pagination, phase string, compon
 	return nil, 0, nil
 }
 
+func (f *fakePipelineRunStore) FindTimedOut(now time.Time) ([]models.PipelineRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	terminal := map[string]bool{"Succeeded": true, "Failed": true, "Error": true, "Cancelled": true, "Canceled": true}
+	var out []models.PipelineRun
+	for _, r := range f.runs {
+		if r.TimeoutSeconds <= 0 {
+			continue
+		}
+		if terminal[string(r.Phase)] {
+			continue
+		}
+		start := r.StartTime
+		if start == nil {
+			t := r.CreatedAt
+			start = &t
+		}
+		if start != nil && now.Sub(*start) > time.Duration(r.TimeoutSeconds)*time.Second {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakePipelineRunStore) CountActiveByPipeline(pipelineID uuid.UUID, phases []string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for _, r := range f.runs {
+		if r.PipelineID != pipelineID {
+			continue
+		}
+		for _, p := range phases {
+			if string(r.Phase) == p {
+				n++
+				break
+			}
+		}
+	}
+	return n, nil
+}
+
+func (f *fakePipelineRunStore) FindQueued(limit int) ([]models.PipelineRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []models.PipelineRun
+	for _, r := range f.runs {
+		if r.Phase == runnerapi.PipelineRunPendingQueue {
+			out = append(out, *r)
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 type fakeTaskRunStore struct{}
 
 func (fakeTaskRunStore) Upsert(*models.TaskRun) error { return nil }

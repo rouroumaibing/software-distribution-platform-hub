@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -22,7 +23,7 @@ import (
 var ErrRunTerminal = common.DomainErrorWithReasons(
 	common.KindRun, http.StatusConflict, 1,
 	"Run has already finished",
-	"only a Pending / Running / WaitingApproval run can be cancelled",
+	"only a Pending / PendingQueue / Running / WaitingApproval run can be cancelled",
 )
 
 // CancelRun asks the Runner owning the run to stop it: mark the PipelineRun
@@ -34,6 +35,24 @@ func (s *PipelineRunService) CancelRun(ctx context.Context, runID uuid.UUID, ope
 	run, err := s.repo.GetByID(runID)
 	if err != nil {
 		return fmt.Errorf("run %s not found: %w", runID, err)
+	}
+
+	// O-41：排队 run 尚未派发、无 runner 侧在途工作，取消为 hub 侧本地终态
+	// —— 置 Cancelled + 退役 held dispatch job（否则 run 卡队列或唤醒后
+	// 仍被投递）。
+	if run.Phase == runnerapi.PipelineRunPendingQueue {
+		run.Phase = runnerapi.PipelineRunCancelled
+		now := time.Now()
+		run.CompletionTime = &now
+		run.Message = "cancelled while queued"
+		if err := s.repo.Update(run); err != nil {
+			return err
+		}
+		if err := s.dispatchRepo.MarkDead(run.ID, "cancelled while queued"); err != nil {
+			applog.Warnf("run: retire held job of queued-cancelled run %s: %v", runID, err)
+		}
+		applog.Infof("run: queued run %s cancelled by %s (hub-side)", runID, operator)
+		return nil
 	}
 
 	switch run.Phase {

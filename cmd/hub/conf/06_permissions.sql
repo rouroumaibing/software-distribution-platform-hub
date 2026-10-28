@@ -10,7 +10,7 @@
 --     `dev-keycloak-sub-*`。
 --   * 绑定一律走 §7 路径：subject_type / subject_id + component_role_id，
 --     角色指向 09_rbac_multiorg.sql 里的 component_roles。
-V1 的 `user_id` / `role_id` 两列不在本表（migrations/0015 调整了列结构）。
+--   * V1 的 `user_id` / `role_id` 两列不在本表（migrations/0015 调整了列结构）。
 --   * V1 `roles` 表本批**保留**（`GET /roles` 仍可读），但它已不可被绑定 ——
 --     没有任何列再引用它。真正的组件级角色是 component_roles。
 -- ============================================================

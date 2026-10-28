@@ -27,6 +27,12 @@ type Pipeline struct {
 	// which version it was triggered with.
 	Version int `gorm:"not null;default:1" json:"version"`
 
+	// ConcurrencyPolicy is the O-41 same-pipeline trigger policy (F4.2):
+	// allow = multiple concurrent runs (default, legacy behavior);
+	// forbid = reject a new trigger while an active run exists (409);
+	// queue = hold the new run as PendingQueue until capacity frees up.
+	ConcurrencyPolicy string `gorm:"size:16;not null;default:allow" json:"concurrencyPolicy"`
+
 	// Params is the runtime-parameter declaration (ui-12 §5.3, N-26):
 	// []ParamDecl as JSON. It drives the trigger dialog's form and seeds
 	// defaults in the trigger-time param resolution (run inputs override).
@@ -54,3 +60,10 @@ func DecodeParamDecls(raw datatypes.JSON) []ParamDecl {
 }
 
 func (Pipeline) TableName() string { return "pipelines" }
+
+// ConcurrencyPolicy* enumerate the O-41 same-pipeline trigger strategies.
+const (
+	ConcurrencyAllow  = "allow"
+	ConcurrencyQueue  = "queue"
+	ConcurrencyForbid = "forbid"
+)

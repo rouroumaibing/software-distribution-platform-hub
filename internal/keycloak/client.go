@@ -10,9 +10,11 @@
 // Design constraints (steelman, 2026-09-23):
 //   - No Keycloak Go SDK dependency: the client is fully unit-testable behind
 //     httptest, which keeps `go test ./...` hermetic.
-//   - Narrow scope: only mint a service-account token + create/list groups.
-//     The hub stays a *passive Resource Server* for token verification; this
-//     client is a *controlled writer* of one resource type, not a general admin.
+//   - Narrow scope, two management-plane faces: (1) org carrier-group
+//     provisioning (EnsureGroup) and (2) the user/group directory proxy
+//     behind the platform-level user:manage guard (directory.go, ui-05
+//     §7.14 M1). The hub stays a *passive Resource Server* for token
+//     verification — none of these calls sit on the authorization path.
 //   - Best-effort by contract: callers decide whether a failure is fatal. The
 //     org DB row is the source of truth; the group is a convenience carrier.
 package keycloak
@@ -86,7 +88,10 @@ func (c *Client) EnsureGroup(ctx context.Context, groupPath string) error {
 	if exists {
 		return nil
 	}
-	return c.createGroup(ctx, name)
+	// doCreateGroup reports a 409 through the conflict flag with err nil —
+	// a concurrent request already created the group, which is success here.
+	_, _, err = c.doCreateGroup(ctx, name)
+	return err
 }
 
 // token returns a cached service-account token or mints a new one. The mutex
@@ -164,33 +169,44 @@ func (c *Client) groupExists(ctx context.Context, name string) (bool, error) {
 	return false, nil
 }
 
-// createGroup POSTs a new group. 201 Created is success; 409 Conflict means a
-// concurrent request already created it, which we treat as success (idempotent).
-func (c *Client) createGroup(ctx context.Context, name string) error {
+// doCreateGroup POSTs a new group. It returns the new group's id (parsed from
+// the Location header, empty when absent) and whether the server reported a
+// conflict (409 — a concurrent request already created it). 201 Created and
+// 409 Conflict both leave err nil; the caller decides how to treat a conflict
+// (EnsureGroup: success; directory CreateGroup: ErrConflict).
+func (c *Client) doCreateGroup(ctx context.Context, name string) (id string, conflict bool, err error) {
 	tok, err := c.token(ctx)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	body, err := json.Marshal(map[string]string{"name": name, "path": "/" + name})
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.AdminBaseURL+"/groups", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
-		return nil
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		if loc := resp.Header.Get("Location"); loc != "" {
+			if i := strings.LastIndex(loc, "/groups/"); i >= 0 {
+				id = strings.TrimPrefix(loc[i:], "/groups/")
+			}
+		}
+		return id, false, nil
+	case http.StatusConflict:
+		return "", true, nil
 	}
 	b, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("keycloak: create group %q %d: %s", name, resp.StatusCode, string(b))
+	return "", false, fmt.Errorf("keycloak: create group %q %d: %s", name, resp.StatusCode, string(b))
 }
 
 type tokenResp struct {
