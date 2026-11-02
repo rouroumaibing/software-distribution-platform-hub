@@ -114,8 +114,6 @@ data:
             "post.logout.redirect.uris": "+"
           },
           "fullScopeAllowed": true,
-          # "basic" 提供 access token 的 sub claim（KC 25+ 从旧默认清单拆出）；缺失则
-          # hub 所有鉴权路由因 subject 为空恒 401。
           "defaultClientScopes": [
             "basic",
             "web-origins",
@@ -181,8 +179,6 @@ data:
             "post.logout.redirect.uris": "+"
           },
           "fullScopeAllowed": true,
-          # "basic" 提供 access token 的 sub claim（KC 25+ 从旧默认清单拆出）；缺失则
-          # hub 所有鉴权路由因 subject 为空恒 401。
           "defaultClientScopes": [
             "basic",
             "web-origins",
