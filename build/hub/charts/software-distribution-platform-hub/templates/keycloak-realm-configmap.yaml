@@ -221,7 +221,7 @@ data:
             }
           ],
           "disableableCredentialTypes": [],
-          "requiredActions": [],
+          "requiredActions": ["UPDATE_PASSWORD"],
           "realmRoles": [
             "default-roles-sdp",
             "admin"
