@@ -597,6 +597,11 @@ func main() {
 	// /metrics 全部路径；纯注入、零状态、不挡请求。
 	r.Use(middleware.SecurityHeaders())
 
+	// --- BFF session layer (AUTH-ARCHITECTURE.md) -------------------------
+	// Pre-auth endpoints (/api/v1/auth/*) + session-cookie verification path.
+	// No-op in dev (auth disabled); wiring lives in auth_setup.go.
+	_ = setupBFFAuth(r, gdb, auth, kcAdmin, cfg.KeycloakIssuer, cfg.KeycloakClientID, os.Getenv("KEYCLOAK_REDIRECT_URI"))
+
 	api := r.Group("/api/v1")
 
 	if auth != nil {

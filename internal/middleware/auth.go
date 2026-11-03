@@ -61,12 +61,35 @@ type Authenticator struct {
 	// patVerifier resolves `sdp_pat_*` bearer tokens (§6.4) to their owner's
 	// subject. Nil = PAT 鉴权未装配（纯 JWT）。
 	patVerifier func(rawToken string) (subject string, err error)
+	// sessionVerifier resolves the httpOnly session cookie (AUTH-ARCHITECTURE
+	// §8) to an identity. Highest-priority path: when present and the cookie
+	// is valid, the bearer/PAT paths are skipped entirely. Nil = BFF session
+	// layer not wired (pure JWT/PAT, the pre-BFF behavior).
+	sessionVerifier func(*http.Request) (SessionIdentity, error)
+}
+
+// SessionIdentity is the resolved identity from a session cookie, returned by
+// the session verifier and mapped onto keycloakClaims inside the middleware
+// (kept unexported; callers outside the package never construct it directly).
+type SessionIdentity struct {
+	Subject  string
+	Username string
+	Groups   []string
 }
 
 // SetPATVerifier wires §6.4 PAT verification. The verifier MUST fail-closed
 // on unknown / revoked / expired tokens.
 func (a *Authenticator) SetPATVerifier(fn func(rawToken string) (subject string, err error)) {
 	a.patVerifier = fn
+}
+
+// SetSessionVerifier wires the BFF session-cookie path (AUTH-ARCHITECTURE §8).
+// The verifier reads the cookie from the request, looks up the session row,
+// and returns the identity — or an error when no valid session exists, in
+// which case the middleware falls through to the bearer path. A missing or
+// expired cookie MUST be an error, not a panic: the fall-through is designed.
+func (a *Authenticator) SetSessionVerifier(fn func(*http.Request) (SessionIdentity, error)) {
+	a.sessionVerifier = fn
 }
 
 // NewAuthenticator fetches the realm's OIDC discovery document once at
@@ -94,6 +117,22 @@ func NewAuthenticator(ctx context.Context, cfg AuthConfig) (*Authenticator, erro
 // UserContext (user_context.go) handles turning claims into a local User.
 func (a *Authenticator) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Session cookie path (AUTH-ARCHITECTURE §8, highest priority). When
+		// the BFF session layer is wired and the request carries a valid
+		// httpOnly session cookie, resolve claims from it and short-circuit
+		// the bearer/PAT paths. A missing/expired cookie falls through.
+		if a.sessionVerifier != nil {
+			if id, verr := a.sessionVerifier(c.Request); verr == nil {
+				c.Set(contextKeyClaims, keycloakClaims{
+					Subject:           id.Subject,
+					PreferredUsername: id.Username,
+					Groups:            id.Groups,
+					AuthorizedParty:   a.clientID,
+				})
+				c.Next()
+				return
+			}
+		}
 		header := c.GetHeader("Authorization")
 		rawToken, ok := strings.CutPrefix(header, "Bearer ")
 		if !ok || rawToken == "" {
