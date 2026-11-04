@@ -25,6 +25,15 @@ func (r *BindingRepository) Delete(id uuid.UUID) error {
 	return r.DB.Delete(&models.ComponentRoleBinding{}, "id = ?", id).Error
 }
 
+// DeleteBySubject removes every component binding for a subject (user `sub` or
+// group path). Used by the cascade-on-delete path (ACCESS-CONTROL §10 坑2):
+// deleting a user/group/org must not leave orphan bindings that still grant
+// access. Returns the number of rows removed.
+func (r *BindingRepository) DeleteBySubject(subjectType, subjectID string) (int64, error) {
+	res := r.DB.Where("subject_type = ? AND subject_id = ?", subjectType, subjectID).Delete(&models.ComponentRoleBinding{})
+	return res.RowsAffected, res.Error
+}
+
 // expiredScope narrows a query to rows whose expires_at is a past timestamp.
 // Shared by both binding tables' DeleteExpired and by the DryRun regression
 // test, so the predicate under test is exactly the one production emits.

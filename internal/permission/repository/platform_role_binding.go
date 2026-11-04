@@ -94,6 +94,15 @@ func (r *PlatformRoleBindingRepository) Delete(id uuid.UUID) error {
 	return r.DB.Delete(&models.PlatformRoleBinding{}, "id = ?", id).Error
 }
 
+// DeleteBySubject removes every platform binding for a subject (user `sub` or
+// group path). Used by the cascade-on-delete path (ACCESS-CONTROL §10 坑2):
+// deleting a user/group/org must not leave orphan bindings that still grant
+// access. Returns the number of rows removed.
+func (r *PlatformRoleBindingRepository) DeleteBySubject(subjectType, subjectID string) (int64, error) {
+	res := r.DB.Where("subject_type = ? AND subject_id = ?", subjectType, subjectID).Delete(&models.PlatformRoleBinding{})
+	return res.RowsAffected, res.Error
+}
+
 // DeleteExpired physically removes platform grants whose expires_at is in the
 // past — the periodic counterpart to ListMatching's filter (§7.4). now is
 // passed in for deterministic SQL in tests.

@@ -12,6 +12,7 @@ import (
 	credentialmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/models"
 	environmentmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environment/models"
 	environmentgroupmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/models"
+	k8srbacmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/k8srbac"
 	notificationmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/notification/models"
 	orgmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/models"
 	permmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/models"
@@ -120,6 +121,9 @@ func Open(cfg Config) (*gorm.DB, error) {
 		// that complete the permission model.
 		&permmodels.ResourceOwnership{}, &permmodels.RoleAPIMapping{},
 		&permmodels.AuditLog{}, &permmodels.PermissionRequest{},
+		// ACCESS-CONTROL §7 / §8 — K8s RBAC 授权层绑定台账（hub 侧单表，
+		// 对接 client-go 下发的 CRB/Role 的主体名与签发 hash）。
+		&k8srbacmodels.ClusterBinding{},
 	); err != nil {
 		return nil, err
 	}

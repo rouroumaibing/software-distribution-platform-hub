@@ -28,6 +28,12 @@ const contextKeyGroups = "auth.groups"
 // dimension, which is why orgs are kept out of subject_id (§5.3).
 const contextKeyOrgs = "auth.orgs"
 
+// contextKeyOrgAdmins is where UserContext stashes the L2 org-admin dimension
+// parsed from the `org_admin` token claim (ACCESS-CONTROL §1.2). The console's
+// /org/dashboard guard reads it via CurrentOrgAdmins; it is frontend-only
+// visibility input, never an authorization input (不动式①).
+const contextKeyOrgAdmins = "auth.orgAdmins"
+
 // DevSubject is the pseudo-subject used when auth is disabled (dev mode).
 const DevSubject = "dev"
 
@@ -64,6 +70,7 @@ func UserContext() gin.HandlerFunc {
 		c.Set(contextKeyPreferredUsername, claims.PreferredUsername)
 		c.Set(contextKeyGroups, claims.Groups)
 		c.Set(contextKeyOrgs, service.OrgsFromGroups(claims.Groups))
+		c.Set(contextKeyOrgAdmins, claims.OrgAdmins)
 		c.Next()
 	}
 }
@@ -121,4 +128,21 @@ func CurrentOrgs(c *gin.Context) []string {
 		return nil
 	}
 	return orgs
+}
+
+// CurrentOrgAdmins reads the L2 org-admin dimension (the org names the subject
+// administers) parsed from the `org_admin` token claim (ACCESS-CONTROL §1.2).
+// Returns nil when the subject administers no organization — a normal state,
+// not an error. Frontend-only visibility input (不动式①); never used as an
+// authorization key.
+func CurrentOrgAdmins(c *gin.Context) []string {
+	raw, exists := c.Get(contextKeyOrgAdmins)
+	if !exists {
+		return nil
+	}
+	admins, ok := raw.([]string)
+	if !ok {
+		return nil
+	}
+	return admins
 }

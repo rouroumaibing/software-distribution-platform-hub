@@ -33,11 +33,12 @@ func (h *UserInfoHandler) RegisterRoutes(rg *gin.RouterGroup) {
 }
 
 type userInfoResponse struct {
-	Subject  string   `json:"subject"`
-	Username string   `json:"username,omitempty"`
-	Groups   []string `json:"groups"`
-	Orgs     []string `json:"orgs"`
-	Roles    []string `json:"roles"`
+	Subject   string   `json:"subject"`
+	Username  string   `json:"username,omitempty"`
+	Groups    []string `json:"groups"`
+	Orgs      []string `json:"orgs"`
+	OrgAdmins []string `json:"orgAdmins"`
+	Roles     []string `json:"roles"`
 }
 
 func (h *UserInfoHandler) Get(c *gin.Context) {
@@ -69,10 +70,11 @@ func (h *UserInfoHandler) Get(c *gin.Context) {
 	}
 
 	common.OK(c, userInfoResponse{
-		Subject:  subject,
-		Username: middleware.CurrentPreferredUsername(c),
-		Groups:   groups,
-		Orgs:     service.OrgsFromGroups(groups),
-		Roles:    roles,
+		Subject:   subject,
+		Username:  middleware.CurrentPreferredUsername(c),
+		Groups:    groups,
+		Orgs:      service.OrgsFromGroups(groups),
+		OrgAdmins: middleware.CurrentOrgAdmins(c),
+		Roles:     roles,
 	})
 }

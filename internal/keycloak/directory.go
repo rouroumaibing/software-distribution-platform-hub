@@ -60,13 +60,16 @@ type Group struct {
 }
 
 // NewUser is the create-user input. InitialPassword, when set, is stored as a
-// temporary credential so Keycloak forces a change on first login.
+// temporary credential so Keycloak forces a change on first login. Groups, when
+// set, is written in one shot so Keycloak's hierarchical group membership is
+// established at creation (ACCESS-CONTROL §4: user.Groups=["/{org}","/{org}/{group}"]).
 type NewUser struct {
 	Username        string
 	Email           string
 	Enabled         bool
 	RequiredActions []string
 	InitialPassword string
+	Groups          []string
 }
 
 // UserPatch is the update-user input; nil fields are left untouched.
@@ -81,6 +84,7 @@ type kcUserRep struct {
 	Email           string         `json:"email,omitempty"`
 	Enabled         bool           `json:"enabled"`
 	RequiredActions []string       `json:"requiredActions,omitempty"`
+	Groups          []string       `json:"groups,omitempty"`
 	Credentials     []kcCredential `json:"credentials,omitempty"`
 }
 
@@ -171,7 +175,7 @@ func (c *Client) CreateUser(ctx context.Context, in NewUser) (string, error) {
 	if strings.TrimSpace(in.Username) == "" {
 		return "", fmt.Errorf("keycloak: username is required")
 	}
-	rep := kcUserRep{Username: in.Username, Email: in.Email, Enabled: in.Enabled, RequiredActions: in.RequiredActions}
+	rep := kcUserRep{Username: in.Username, Email: in.Email, Enabled: in.Enabled, RequiredActions: in.RequiredActions, Groups: in.Groups}
 	if in.InitialPassword != "" {
 		rep.Credentials = []kcCredential{{Type: "password", Value: in.InitialPassword, Temporary: true}}
 	}
@@ -299,6 +303,10 @@ func (c *Client) AddGroupMember(ctx context.Context, groupID, userID string) err
 	status, _, err := c.adminCall(ctx, http.MethodPut, "/groups/"+url.PathEscape(groupID)+"/members/"+url.PathEscape(userID), nil, nil)
 	if err != nil {
 		return err
+	}
+	// 409 = already a member → idempotent success (provisioning re-runs).
+	if status == http.StatusConflict {
+		return nil
 	}
 	return mapAdminStatus(status, nil)
 }

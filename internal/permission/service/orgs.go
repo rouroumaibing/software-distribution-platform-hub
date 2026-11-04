@@ -3,21 +3,19 @@ package service
 import "strings"
 
 // OrgsFromGroups extracts the org aliases the subject belongs to from the
-// token's `groups` claim, under the `/org:<slug>` convention (D1 default
-// carrier, ACCOUNT-PERMISSION-MODEL §2.3). Non-org groups are ignored. Pure
-// logic so the carrier parsing is unit-testable without a token. Duplicates
-// are collapsed, order preserved.
-//
-// The reserved prefix itself is OrgGroupPrefix (declared in platform_binding.go);
-// groups under it identify the org dimension and are never an RBAC subject.
+// token's `groups` claim. It supports both the legacy `/org:<slug>` carrier
+// (ACCOUNT-PERMISSION-MODEL §2.3) and the hierarchical `/{slug}` + `/{slug}/{group}`
+// model (ACCESS-CONTROL §11 / D1 revision): the org is the first path segment
+// of any group whose path is `/{org}` or `/{org}/{group}`. Non-org groups that
+// happen to be top-level (e.g. `/team-x`) are treated as org "team-x" under the
+// new model, where org groups ARE the top-level groups. Pure logic so the
+// carrier parsing is unit-testable without a token. Duplicates are collapsed,
+// order preserved.
 func OrgsFromGroups(groups []string) []string {
 	var out []string
 	seen := map[string]struct{}{}
 	for _, g := range groups {
-		if !strings.HasPrefix(g, OrgGroupPrefix) {
-			continue
-		}
-		slug := strings.TrimPrefix(g, OrgGroupPrefix)
+		slug := orgSlugFromGroup(g)
 		if slug == "" {
 			continue
 		}
@@ -28,4 +26,16 @@ func OrgsFromGroups(groups []string) []string {
 		out = append(out, slug)
 	}
 	return out
+}
+
+// orgSlugFromGroup resolves the org slug from a single group path.
+func orgSlugFromGroup(g string) string {
+	if strings.HasPrefix(g, OrgGroupPrefix) {
+		return strings.TrimPrefix(g, OrgGroupPrefix)
+	}
+	t := strings.TrimPrefix(g, "/")
+	if t == "" {
+		return ""
+	}
+	return strings.SplitN(t, "/", 2)[0]
 }

@@ -13,13 +13,15 @@ import (
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/keycloak"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/permission/repository"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/session"
 )
 
 // KeycloakDirectoryHandler is the management-plane proxy in front of the
 // Keycloak Admin REST API (D3 re-estimation, ui-05 §7.14 M1 / ui-09 N-34):
 // the console gets a user/group directory for subject pickers and account
 // administration without ever holding admin credentials itself. Mounted on
-// the platform group (user:manage). The org carrier groups (/org:<slug>) are
+// the platform group (user:manage). The org carrier groups (/<slug>) are
 // orgsvc-owned and read-only through this proxy — enforced here, not just in
 // the UI.
 //
@@ -35,14 +37,59 @@ type KeycloakDirectory interface {
 	ListGroupMembers(ctx context.Context, groupID string, first, max int) ([]keycloak.User, error)
 	AddGroupMember(ctx context.Context, groupID, userID string) error
 	RemoveGroupMember(ctx context.Context, groupID, userID string) error
+	CreateSubGroup(ctx context.Context, parentPath, name string) (string, error)
+	DeleteGroup(ctx context.Context, id string) error
+	DeleteUser(ctx context.Context, id string) error
 }
+
+// reservedAdminGroupName is the org admin subgroup name (ACCESS-CONTROL §5).
+// It is created by org provisioning and must never be created, renamed, or
+// deleted through the console proxy.
+const reservedAdminGroupName = "admins"
 
 type KeycloakDirectoryHandler struct {
 	kc KeycloakDirectory
+	// cascade deps are optional: wired via WithCascade so the handler can run
+	// in tests or dev mode without them. When present, user/group deletes also
+	// clear hub RoleBindings + active sessions (坑2, ACCESS-CONTROL §10).
+	platformBindingRepo *repository.PlatformRoleBindingRepository
+	componentBindingRepo *repository.BindingRepository
+	sessionRepo         *session.Repository
 }
 
 func NewKeycloakDirectoryHandler(kc KeycloakDirectory) *KeycloakDirectoryHandler {
 	return &KeycloakDirectoryHandler{kc: kc}
+}
+
+// WithCascade wires the repositories needed for cascade-on-delete (坑2). Returns
+// the receiver so it can be chained at construction time.
+func (h *KeycloakDirectoryHandler) WithCascade(
+	platform *repository.PlatformRoleBindingRepository,
+	component *repository.BindingRepository,
+	sess *session.Repository,
+) *KeycloakDirectoryHandler {
+	h.platformBindingRepo = platform
+	h.componentBindingRepo = component
+	h.sessionRepo = sess
+	return h
+}
+
+// cascadeClearForSubject removes every hub binding + active session tied to a
+// subject (user `sub` or group path) so deleting a Keycloak principal never
+// leaves an orphan grant (坑2). Best-effort: missing repos are skipped.
+func (h *KeycloakDirectoryHandler) cascadeClearForSubject(ctx context.Context, subjectType, subjectID string) {
+	if subjectID == "" {
+		return
+	}
+	if h.platformBindingRepo != nil {
+		_, _ = h.platformBindingRepo.DeleteBySubject(subjectType, subjectID)
+	}
+	if h.componentBindingRepo != nil {
+		_, _ = h.componentBindingRepo.DeleteBySubject(subjectType, subjectID)
+	}
+	if h.sessionRepo != nil {
+		_ = h.sessionRepo.DeleteBySubject(ctx, subjectID)
+	}
 }
 
 func (h *KeycloakDirectoryHandler) RegisterRoutes(rg *gin.RouterGroup) {
@@ -56,6 +103,16 @@ func (h *KeycloakDirectoryHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/keycloak/groups/:id/members", h.ListGroupMembers)
 	rg.PUT("/keycloak/groups/:id/members/:userId", h.AddGroupMember)
 	rg.DELETE("/keycloak/groups/:id/members/:userId", h.RemoveGroupMember)
+
+	// Org-scoped user/group management (ACCESS-CONTROL §4 / §5). These run on
+	// the same platform group, so they resolve to /api/v1/users and
+	// /api/v1/organizations/... — the contract paths in ACCESS-CONTROL.
+	rg.POST("/users", h.CreateOrgUser)
+	rg.DELETE("/users/:id", h.DeleteOrgUser)
+	rg.POST("/organizations/:org/groups", h.CreateOrgGroup)
+	rg.POST("/organizations/:org/groups/:group/users/:userId", h.AddOrgGroupMember)
+	rg.DELETE("/organizations/:org/groups/:group/users/:userId", h.RemoveOrgGroupMember)
+	rg.DELETE("/organizations/:org/groups/:group", h.DeleteOrgGroup)
 }
 
 // failDirectory maps the client's sentinels onto the permission error family;
@@ -341,4 +398,174 @@ func PasswordClassSatisfied(pw string) bool {
 		}
 	}
 	return hasLower && hasUpper && hasDigit
+}
+
+// resolveOrgGroupID maps an org + group name to its Keycloak group id via the
+// directory interface (ListGroups is available on the interface, so no concrete
+// *Client dependency is needed here).
+func (h *KeycloakDirectoryHandler) resolveOrgGroupID(ctx context.Context, org, name string) (string, error) {
+	groups, err := h.kc.ListGroups(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	want := "/" + org + "/" + name
+	for _, g := range groups {
+		if g.Path == want {
+			return g.ID, nil
+		}
+	}
+	return "", keycloak.ErrNotFound
+}
+
+// CreateOrgUser provisions a user directly into an org (and optionally a group)
+// with one shot: user.Groups = ["/{org}", "/{org}/{group}"] (ACCESS-CONTROL §4).
+// Keycloak's hierarchical groups establish both the org and group membership in
+// a single write — no second AddGroupMember call needed.
+func (h *KeycloakDirectoryHandler) CreateOrgUser(c *gin.Context) {
+	org := strings.TrimSpace(c.Query("org"))
+	group := strings.TrimSpace(c.Query("group"))
+	if org == "" {
+		common.Fail(c, http.StatusBadRequest, common.ErrBadRequest.WithMessage("org query param is required"))
+		return
+	}
+	var in createUserReq
+	if err := c.ShouldBindJSON(&in); err != nil {
+		common.Fail(c, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(in.Username) == "" {
+		common.Fail(c, http.StatusBadRequest, common.ErrBadRequest.WithMessage("username is required"))
+		return
+	}
+	tempPassword := in.InitialPassword
+	if tempPassword == "" {
+		tempPassword = GenerateTemporaryPassword()
+	}
+	if len(tempPassword) < 12 {
+		common.Fail(c, http.StatusBadRequest, common.ErrBadRequest.WithMessage("initialPassword must be at least 12 characters"))
+		return
+	}
+	groups := []string{"/" + org}
+	if group != "" {
+		groups = append(groups, "/"+org+"/"+group)
+	}
+	id, err := h.kc.CreateUser(c.Request.Context(), keycloak.NewUser{
+		Username:        strings.TrimSpace(in.Username),
+		Email:           strings.TrimSpace(in.Email),
+		Enabled:         true,
+		RequiredActions: []string{"UPDATE_PASSWORD"},
+		InitialPassword: tempPassword,
+		Groups:          groups,
+	})
+	if err != nil {
+		failDirectory(c, err)
+		return
+	}
+	common.Created(c, createUserResp{
+		ID:                id,
+		Username:          strings.TrimSpace(in.Username),
+		Email:             strings.TrimSpace(in.Email),
+		TemporaryPassword: tempPassword,
+		RequiredActions:   []string{"UPDATE_PASSWORD"},
+	})
+}
+
+// DeleteOrgUser removes a Keycloak user and cascades: every hub RoleBinding
+// (platform + component) and active session keyed on the user's `sub` (= KC
+// user id) is cleared first (坑2, ACCESS-CONTROL §10), so no orphan grant
+// survives the principal's deletion.
+func (h *KeycloakDirectoryHandler) DeleteOrgUser(c *gin.Context) {
+	id := c.Param("id")
+	h.cascadeClearForSubject(c.Request.Context(), "user", id)
+	if err := h.kc.DeleteUser(c.Request.Context(), id); err != nil {
+		failDirectory(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// CreateOrgGroup creates a subgroup under /{org} (ACCESS-CONTROL §5). The
+// reserved `admins` subgroup is platform-managed and cannot be created through
+// the console.
+func (h *KeycloakDirectoryHandler) CreateOrgGroup(c *gin.Context) {
+	org := strings.TrimSpace(c.Param("org"))
+	name := strings.TrimSpace(c.Query("name"))
+	if name == "" {
+		var b struct {
+			Name string `json:"name"`
+		}
+		_ = c.ShouldBindJSON(&b)
+		name = strings.TrimSpace(b.Name)
+	}
+	if name == "" {
+		common.Fail(c, http.StatusBadRequest, common.ErrBadRequest.WithMessage("group name is required"))
+		return
+	}
+	if name == reservedAdminGroupName {
+		common.Fail(c, http.StatusForbidden, common.DomainError(common.KindPermission, http.StatusForbidden, 36, "the admins subgroup is reserved and managed by the platform"))
+		return
+	}
+	id, err := h.kc.CreateSubGroup(c.Request.Context(), "/"+org, name)
+	if err != nil {
+		failDirectory(c, err)
+		return
+	}
+	common.Created(c, keycloak.Group{ID: id, Name: name, Path: "/" + org + "/" + name})
+}
+
+// AddOrgGroupMember adds a user to an org subgroup (resolved by org+group name).
+func (h *KeycloakDirectoryHandler) AddOrgGroupMember(c *gin.Context) {
+	org := c.Param("org")
+	group := c.Param("group")
+	userID := c.Param("userId")
+	gid, err := h.resolveOrgGroupID(c.Request.Context(), org, group)
+	if err != nil {
+		failDirectory(c, err)
+		return
+	}
+	if err := h.kc.AddGroupMember(c.Request.Context(), gid, userID); err != nil {
+		failDirectory(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// RemoveOrgGroupMember removes a user from an org subgroup.
+func (h *KeycloakDirectoryHandler) RemoveOrgGroupMember(c *gin.Context) {
+	org := c.Param("org")
+	group := c.Param("group")
+	userID := c.Param("userId")
+	gid, err := h.resolveOrgGroupID(c.Request.Context(), org, group)
+	if err != nil {
+		failDirectory(c, err)
+		return
+	}
+	if err := h.kc.RemoveGroupMember(c.Request.Context(), gid, userID); err != nil {
+		failDirectory(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// DeleteOrgGroup removes an org subgroup and cascades: hub RoleBindings +
+// active sessions keyed on the group path are cleared first (坑2), and the
+// reserved `admins` subgroup is protected (service-layer enforced, not just UI).
+func (h *KeycloakDirectoryHandler) DeleteOrgGroup(c *gin.Context) {
+	org := c.Param("org")
+	group := c.Param("group")
+	if group == reservedAdminGroupName {
+		common.Fail(c, http.StatusForbidden, common.DomainError(common.KindPermission, http.StatusForbidden, 37, "the admins subgroup cannot be deleted"))
+		return
+	}
+	gid, err := h.resolveOrgGroupID(c.Request.Context(), org, group)
+	if err != nil {
+		failDirectory(c, err)
+		return
+	}
+	h.cascadeClearForSubject(c.Request.Context(), "group", "/"+org+"/"+group)
+	if err := h.kc.DeleteGroup(c.Request.Context(), gid); err != nil {
+		failDirectory(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

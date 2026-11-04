@@ -58,21 +58,35 @@ data:
             "attributes": {}
           },
           {
-            "name": "view",
+            "name": "platform-admin",
             "composite": false,
             "clientRole": false,
             "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
             "attributes": {}
           },
           {
-            "name": "edit",
+            "name": "operator",
             "composite": false,
             "clientRole": false,
             "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
             "attributes": {}
           },
           {
-            "name": "admin",
+            "name": "auditor",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+            "attributes": {}
+          },
+          {
+            "name": "viewer",
+            "composite": false,
+            "clientRole": false,
+            "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
+            "attributes": {}
+          },
+          {
+            "name": "self-provisioner",
             "composite": false,
             "clientRole": false,
             "containerId": "ac7952e2-2d39-4fce-aea9-6c9ae4b2763d",
@@ -155,6 +169,21 @@ data:
                 "claim.name": "groups",
                 "userinfo.token.claim": "true"
               }
+            },
+            {
+              "name": "org_admin",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-attribute-mapper",
+              "consentRequired": false,
+              "config": {
+                "user.attribute": "org_admin",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "claim.name": "org_admin",
+                "jsonType.label": "String",
+                "multivalued": "true"
+              }
             }
           ]
         },
@@ -224,7 +253,7 @@ data:
           "requiredActions": ["UPDATE_PASSWORD"],
           "realmRoles": [
             "default-roles-sdp",
-            "admin"
+            "platform-admin"
           ],
           "notBefore": 0,
           "groups": [

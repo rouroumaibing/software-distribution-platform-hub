@@ -54,6 +54,7 @@ import (
 	envgrouprepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/repository"
 	envgroupsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/service"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/gateway"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/k8srbac"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/keycloak"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/middleware"
 	orghandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/org/handler"
@@ -184,22 +185,29 @@ func main() {
 	if serr := roleMappingSvc.SyncFromRoles(); serr != nil {
 		applog.Warnf("hub: role→action registry sync failed (continuing): %v", serr)
 	}
-	// Org carrier groups (/org:<slug>) are provisioned in Keycloak when auth
-	// is enabled and the sdp-backend service-account secret is configured.
-	// Without it the hub stays a passive Resource Server and skips group sync
-	// (dev mode). The provisioner is best-effort everywhere it is used, so a
-	// Keycloak outage never blocks org creation or hub startup.
+	// Org carrier groups (hierarchical /<slug> + /<slug>/admins model,
+	// ACCESS-CONTROL §11) are provisioned in Keycloak when auth is enabled and
+	// the sdp-backend service-account secret is configured. Without it the hub
+	// stays a passive Resource Server and skips group sync (dev mode).
+	// Provisioning is best-effort everywhere it is used, so a Keycloak outage
+	// never blocks org creation or hub startup.
 	var kcAdmin *keycloak.Client
-	var orgGroupProvisioner keycloak.GroupProvisioner
 	if !cfg.AuthDisabled() {
 		if cfg.KeycloakAdminClientSecret == "" {
 			applog.Warnf("hub: KEYCLOAK_ADMIN_CLIENT_SECRET not set — org carrier groups will not be synced to Keycloak and the directory proxy stays unmounted")
 		} else {
 			kcAdmin = keycloak.NewClient(cfg.KeycloakIssuer, cfg.KeycloakAdminClientID, cfg.KeycloakAdminClientSecret)
-			orgGroupProvisioner = kcAdmin
 		}
 	}
-	orgSvc := orgsvc.NewOrgService(orgRepo, serviceTreeRepo, orgGroupProvisioner)
+	orgSvc := orgsvc.NewOrgService(orgRepo, serviceTreeRepo, kcAdmin)
+	// Startup orchestration (ACCESS-CONTROL §2.2): create the default org with
+	// its admins subgroup + register the bootstrap admin as org manager (L2),
+	// then reconcile legacy /org:<slug> groups into the new hierarchical model.
+	// Best-effort: a Keycloak outage must not block hub startup.
+	if err := orgSvc.EnsureDefaultOrgWithAdmin(context.Background(), "admin"); err != nil {
+		applog.Warnf("hub: ensure default org failed (continuing): %v", err)
+	}
+	orgSvc.MigrateOrgGroups(context.Background())
 	// searchSvc 是跨资源的**导航**搜索：服务树页与 ⌘K 浮层共用同一个端点
 	// （CONSOLE-UI-DESIGN.md 附 A N-8）。它无状态、无写路径，只做跨表查询。
 	searchSvc := searchsvc.NewSearchService(searchRepo)
@@ -695,6 +703,13 @@ func main() {
 	if kcAdmin != nil {
 		permhandler.NewKeycloakDirectoryHandler(kcAdmin).RegisterRoutes(platformGroup)
 	}
+	// ACCESS-CONTROL §7 / §8 — K8s RBAC 授权层：集群权限 CRUD + kubeconfig
+	// 签发（CSR）+ 吊销（换 subject）。复用环境凭据直连目标集群，hub 不持 CA。
+	// 挂平台组（user:manage）：集群权限是高危平台级动作。
+	k8srbacRepo := k8srbac.NewRepository(gdb)
+	k8srbacResolver := &kubeconfigResolver{envSvc: envSvc, credSvc: credSvc}
+	k8srbacSvc := k8srbac.NewService(k8srbacRepo, k8srbacResolver)
+	k8srbac.NewClusterPermissionHandler(k8srbacSvc).RegisterRoutes(platformGroup)
 	// STATUS #19 + ui-12 5.4 组件级审计下沉：审计读端点
 	// 双通道 —— 平台管理员（user:manage）全量可查；组件管理员（component:
 	// manage）须携带 ?componentId= 且查询被 handler 强制钳到该组件。
@@ -952,4 +967,36 @@ func (r *environmentMetaResolver) UniqueByComponentTargetNamespace(componentID, 
 		return uuid.Nil, false
 	}
 	return envID, ok
+}
+
+// kubeconfigResolver implements k8srbac.KubeconfigResolver by composing the
+// environment + credential services: environment.KubeCredRef (string id of a
+// kubeconfig credential) → credentials table Value (plaintext kubeconfig).
+// ACCESS-CONTROL §7: hub 复用环境凭据直连目标集群，不持 CA。
+type kubeconfigResolver struct {
+	envSvc  *envsvc.EnvironmentService
+	credSvc *credsvc.CredentialService
+}
+
+func (r *kubeconfigResolver) Resolve(ctx context.Context, environmentID uuid.UUID) (string, error) {
+	env, err := r.envSvc.Get(environmentID)
+	if err != nil {
+		return "", fmt.Errorf("k8srbac resolver: environment %s: %w", environmentID, err)
+	}
+	credRef := env.AccessConfig.KubeCredRef
+	if credRef == "" {
+		return "", fmt.Errorf("k8srbac resolver: environment %s has no kubeCredRef", environmentID)
+	}
+	credID, err := uuid.Parse(credRef)
+	if err != nil {
+		return "", fmt.Errorf("k8srbac resolver: environment %s kubeCredRef %q is not a uuid: %w", environmentID, credRef, err)
+	}
+	cred, err := r.credSvc.Get(credID)
+	if err != nil {
+		return "", fmt.Errorf("k8srbac resolver: credential %s: %w", credID, err)
+	}
+	if cred.Value == "" {
+		return "", fmt.Errorf("k8srbac resolver: credential %s has empty kubeconfig", credID)
+	}
+	return cred.Value, nil
 }

@@ -38,6 +38,12 @@ type keycloakClaims struct {
 	// claim mapper). Consumed by §7 group-based RBAC inheritance so a single
 	// group binding grants every member the role's actions.
 	Groups []string `json:"groups"`
+	// OrgAdmins carries the L2 organization-admin dimension (ACCESS-CONTROL
+	// §1.2): the org names the subject administers, sourced from the user's
+	// Keycloak `org_admin` attribute (mapped to the top-level claim by the
+	// sdp-console client). Frontend-only visibility input, never an
+	// authorization input (不动式①).
+	OrgAdmins []string `json:"org_admin"`
 	// AuthorizedParty is the client ID the token was issued for. Used
 	// instead of the standard "aud" check below.
 	AuthorizedParty string `json:"azp"`
@@ -72,9 +78,10 @@ type Authenticator struct {
 // the session verifier and mapped onto keycloakClaims inside the middleware
 // (kept unexported; callers outside the package never construct it directly).
 type SessionIdentity struct {
-	Subject  string
-	Username string
-	Groups   []string
+	Subject   string
+	Username  string
+	Groups    []string
+	OrgAdmins []string
 }
 
 // SetPATVerifier wires §6.4 PAT verification. The verifier MUST fail-closed
@@ -127,6 +134,7 @@ func (a *Authenticator) Middleware() gin.HandlerFunc {
 					Subject:           id.Subject,
 					PreferredUsername: id.Username,
 					Groups:            id.Groups,
+					OrgAdmins:         id.OrgAdmins,
 					AuthorizedParty:   a.clientID,
 				})
 				c.Next()

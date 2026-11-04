@@ -209,7 +209,188 @@ func (c *Client) doCreateGroup(ctx context.Context, name string) (id string, con
 	return "", false, fmt.Errorf("keycloak: create group %q %d: %s", name, resp.StatusCode, string(b))
 }
 
+// GetGroupByName resolves a group id by its full path (e.g. "/default/admins").
+// Exported wrapper around getGroupIDByName for callers in other packages (org
+// service group cleanup, ACCESS-CONTROL §3.2).
+func (c *Client) GetGroupByName(ctx context.Context, path string) (string, error) {
+	return c.getGroupIDByName(ctx, strings.TrimPrefix(path, "/"))
+}
+
 type tokenResp struct {
 	AccessToken string `json:"access_token"`
 	ExpiresIn   int    `json:"expires_in"`
+}
+
+// kcGroupRep is the create-subgroup request body.
+type kcGroupRep struct {
+	Name string `json:"name"`
+}
+
+// kcGroupNode is the detailed group representation returned by the Admin REST
+// API (includes id + full path, used to resolve parent groups).
+type kcGroupNode struct {
+	ID   string        `json:"id"`
+	Name string        `json:"name"`
+	Path string        `json:"path"`
+	Attributes map[string][]string `json:"attributes"`
+}
+
+// getGroupIDByName resolves a group's id by its exact name (top-level). Keycloak
+// group search is path-insensitive on name, so we match on the exact path
+// "/<name>" to avoid colliding with same-named subgroups.
+func (c *Client) getGroupIDByName(ctx context.Context, name string) (string, error) {
+	tok, err := c.token(ctx)
+	if err != nil {
+		return "", err
+	}
+	u := c.AdminBaseURL + "/groups?search=" + url.QueryEscape(name) + "&exact=true"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("keycloak: list groups %d: %s", resp.StatusCode, string(b))
+	}
+	var groups []kcGroupNode
+	if err := json.NewDecoder(resp.Body).Decode(&groups); err != nil {
+		return "", err
+	}
+	for _, g := range groups {
+		if g.Path == "/"+name {
+			return g.ID, nil
+		}
+	}
+	return "", ErrNotFound
+}
+
+// CreateSubGroup creates a child group under the parent (referenced by its full
+// path, e.g. "/default") and returns the new subgroup id. It is idempotent
+// (a 409 is treated as success, returning the existing id when surfaced via
+// Location).
+func (c *Client) CreateSubGroup(ctx context.Context, parentPath, name string) (string, error) {
+	parentID, err := c.getGroupIDByName(ctx, strings.TrimPrefix(parentPath, "/"))
+	if err != nil {
+		return "", err
+	}
+	tok, err := c.token(ctx)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(kcGroupRep{Name: name})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.AdminBaseURL+"/groups/"+url.PathEscape(parentID)+"/children", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		if loc := resp.Header.Get("Location"); loc != "" {
+			if i := strings.LastIndex(loc, "/children/"); i >= 0 {
+				return strings.TrimPrefix(loc[i:], "/children/"), nil
+			}
+		}
+		// Re-resolve by name when Location is absent.
+		return c.getGroupIDByName(ctx, name)
+	case http.StatusConflict:
+		return c.getGroupIDByName(ctx, name)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	return "", fmt.Errorf("keycloak: create subgroup %q under %q %d: %s", name, parentPath, resp.StatusCode, string(b))
+}
+
+// DeleteGroup deletes a group by id.
+func (c *Client) DeleteGroup(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("keycloak: group id is required")
+	}
+	status, _, err := c.adminCall(ctx, http.MethodDelete, "/groups/"+url.PathEscape(id), nil, nil)
+	if err != nil {
+		return err
+	}
+	return mapAdminStatus(status, nil)
+}
+
+// GetUserByName resolves a user by exact username.
+func (c *Client) GetUserByName(ctx context.Context, username string) (User, error) {
+	if username == "" {
+		return User{}, fmt.Errorf("keycloak: username is required")
+	}
+	var users []User
+	status, _, err := c.adminCall(ctx, http.MethodGet, "/users?username="+url.QueryEscape(username)+"&exact=true", nil, &users)
+	if err != nil {
+		return User{}, err
+	}
+	if err := mapAdminStatus(status, nil); err != nil {
+		return User{}, err
+	}
+	if len(users) == 0 {
+		return User{}, ErrNotFound
+	}
+	return users[0], nil
+}
+
+// GetUserAttributes returns the user's attributes map (multi-valued).
+func (c *Client) GetUserAttributes(ctx context.Context, id string) (map[string][]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("keycloak: user id is required")
+	}
+	var rep struct {
+		Attributes map[string][]string `json:"attributes"`
+	}
+	status, _, err := c.adminCall(ctx, http.MethodGet, "/users/"+url.PathEscape(id), nil, &rep)
+	if err != nil {
+		return nil, err
+	}
+	if err := mapAdminStatus(status, nil); err != nil {
+		return nil, err
+	}
+	if rep.Attributes == nil {
+		rep.Attributes = map[string][]string{}
+	}
+	return rep.Attributes, nil
+}
+
+// SetUserAttributes replaces the user's attributes map. It is the mechanism
+// behind L2 org_admin membership (ACCESS-CONTROL §1.2).
+func (c *Client) SetUserAttributes(ctx context.Context, id string, attrs map[string][]string) error {
+	if id == "" {
+		return fmt.Errorf("keycloak: user id is required")
+	}
+	rep := struct {
+		Attributes map[string][]string `json:"attributes"`
+	}{Attributes: attrs}
+	status, _, err := c.adminCall(ctx, http.MethodPut, "/users/"+url.PathEscape(id), rep, nil)
+	if err != nil {
+		return err
+	}
+	return mapAdminStatus(status, nil)
+}
+
+// DeleteUser deletes a user by id.
+func (c *Client) DeleteUser(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("keycloak: user id is required")
+	}
+	status, _, err := c.adminCall(ctx, http.MethodDelete, "/users/"+url.PathEscape(id), nil, nil)
+	if err != nil {
+		return err
+	}
+	return mapAdminStatus(status, nil)
 }

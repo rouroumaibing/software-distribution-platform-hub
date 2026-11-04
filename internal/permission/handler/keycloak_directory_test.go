@@ -100,6 +100,27 @@ func (s *stubDirectory) RemoveGroupMember(_ context.Context, groupID, userID str
 	return nil
 }
 
+func (s *stubDirectory) CreateSubGroup(_ context.Context, parentPath, name string) (string, error) {
+	id := "g-sub-" + name
+	s.groups[id] = keycloak.Group{ID: id, Name: name, Path: parentPath + "/" + name}
+	return id, nil
+}
+
+func (s *stubDirectory) DeleteGroup(_ context.Context, id string) error {
+	if _, ok := s.groups[id]; !ok {
+		return keycloak.ErrNotFound
+	}
+	delete(s.groups, id)
+	return nil
+}
+
+func (s *stubDirectory) DeleteUser(_ context.Context, id string) error {
+	if id == "missing" {
+		return keycloak.ErrNotFound
+	}
+	return nil
+}
+
 func directoryRouter(t *testing.T) (*gin.Engine, *stubDirectory) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -131,6 +152,14 @@ func TestKeycloakDirectoryRoutesAreRegistered(t *testing.T) {
 		"GET /api/v1/keycloak/groups/:id/members",
 		"PUT /api/v1/keycloak/groups/:id/members/:userId",
 		"DELETE /api/v1/keycloak/groups/:id/members/:userId",
+		// Org-scoped user/group management (ACCESS-CONTROL §4/§5):
+		// mounted on the same platform group → /api/v1/users, /api/v1/organizations/...
+		"POST /api/v1/users",
+		"DELETE /api/v1/users/:id",
+		"POST /api/v1/organizations/:org/groups",
+		"POST /api/v1/organizations/:org/groups/:group/users/:userId",
+		"DELETE /api/v1/organizations/:org/groups/:group/users/:userId",
+		"DELETE /api/v1/organizations/:org/groups/:group",
 	}
 	for _, w := range want {
 		if !got[w] {
