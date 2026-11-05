@@ -176,8 +176,11 @@ func (c *Client) CreateUser(ctx context.Context, in NewUser) (string, error) {
 		return "", fmt.Errorf("keycloak: username is required")
 	}
 	rep := kcUserRep{Username: in.Username, Email: in.Email, Enabled: in.Enabled, RequiredActions: in.RequiredActions, Groups: in.Groups}
+	// 新建用户即设永久密码（temporary=false）：管理员设的初始密码直接可登录，
+	// 首登不触发强制改密（AUTH-ARCHITECTURE §3 坑3 / D10）。bootstrap admin 的
+	// 强制改密由 realm 种子单独处理，不经此路径。
 	if in.InitialPassword != "" {
-		rep.Credentials = []kcCredential{{Type: "password", Value: in.InitialPassword, Temporary: true}}
+		rep.Credentials = []kcCredential{{Type: "password", Value: in.InitialPassword, Temporary: false}}
 	}
 	status, hdr, err := c.adminCall(ctx, http.MethodPost, "/users", rep, nil)
 	if err != nil {
@@ -320,4 +323,171 @@ func (c *Client) RemoveGroupMember(ctx context.Context, groupID, userID string) 
 		return err
 	}
 	return mapAdminStatus(status, nil)
+}
+
+// IdentityProvider is the slim passthrough of Keycloak's
+// IdentityProviderRepresentation the console needs (realmsettings/identityprovider
+// CRUD, AUTH-ARCHITECTURE §5). The hub does NOT reinterpret it — it stores and
+// replays the exact representation so any KC-supported provider (oidc / saml /
+// cas / ...) works without a per-provider code path.
+type IdentityProvider struct {
+	Alias       string            `json:"alias"`
+	DisplayName string            `json:"displayName,omitempty"`
+	ProviderID  string            `json:"providerId"`
+	Enabled     bool              `json:"enabled"`
+	TrustEmail  bool              `json:"trustEmail,omitempty"`
+	Config      map[string]string `json:"config,omitempty"`
+}
+
+// kcIdentityProviderRep mirrors the Admin REST wire form. Config arrives as
+// map[string]any (KC may send arrays); we normalize to map[string]string.
+type kcIdentityProviderRep struct {
+	Alias       string         `json:"alias"`
+	DisplayName string         `json:"displayName,omitempty"`
+	ProviderID  string         `json:"providerId"`
+	Enabled     bool           `json:"enabled"`
+	TrustEmail  bool           `json:"trustEmail,omitempty"`
+	Config      map[string]any `json:"config,omitempty"`
+}
+
+func (r kcIdentityProviderRep) toIdentityProvider() IdentityProvider {
+	out := IdentityProvider{
+		Alias:       r.Alias,
+		DisplayName: r.DisplayName,
+		ProviderID:  r.ProviderID,
+		Enabled:     r.Enabled,
+		TrustEmail:  r.TrustEmail,
+	}
+	if len(r.Config) > 0 {
+		cfg := make(map[string]string, len(r.Config))
+		for k, v := range r.Config {
+			switch t := v.(type) {
+			case string:
+				cfg[k] = t
+			case []any:
+				if len(t) > 0 {
+					if s, ok := t[0].(string); ok {
+						cfg[k] = s
+					}
+				}
+			default:
+				cfg[k] = fmt.Sprintf("%v", v)
+			}
+		}
+		out.Config = cfg
+	}
+	return out
+}
+
+// kcProviderType is the factory descriptor returned by /identity-provider/providers.
+type kcProviderType struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+// ListIdentityProviders returns every configured IdP instance.
+func (c *Client) ListIdentityProviders(ctx context.Context) ([]IdentityProvider, error) {
+	var reps []kcIdentityProviderRep
+	status, _, err := c.adminCall(ctx, http.MethodGet, "/identity-provider/instances", nil, &reps)
+	if err != nil {
+		return nil, err
+	}
+	if err := mapAdminStatus(status, nil); err != nil {
+		return nil, err
+	}
+	out := make([]IdentityProvider, 0, len(reps))
+	for _, r := range reps {
+		out = append(out, r.toIdentityProvider())
+	}
+	return out, nil
+}
+
+// GetIdentityProvider returns one IdP by alias.
+func (c *Client) GetIdentityProvider(ctx context.Context, alias string) (IdentityProvider, error) {
+	var rep kcIdentityProviderRep
+	status, _, err := c.adminCall(ctx, http.MethodGet, "/identity-provider/instances/"+url.PathEscape(alias), nil, &rep)
+	if err != nil {
+		return IdentityProvider{}, err
+	}
+	if err := mapAdminStatus(status, nil); err != nil {
+		return IdentityProvider{}, err
+	}
+	return rep.toIdentityProvider(), nil
+}
+
+// CreateIdentityProvider adds a new IdP instance.
+func (c *Client) CreateIdentityProvider(ctx context.Context, in IdentityProvider) (string, error) {
+	if strings.TrimSpace(in.Alias) == "" || strings.TrimSpace(in.ProviderID) == "" {
+		return "", fmt.Errorf("keycloak: idp alias and providerId are required")
+	}
+	body := idpToRep(in)
+	status, hdr, err := c.adminCall(ctx, http.MethodPost, "/identity-provider/instances", body, nil)
+	if err != nil {
+		return "", err
+	}
+	if serr := mapAdminStatus(status, nil); serr != nil {
+		return "", serr
+	}
+	if loc := hdr.Get("Location"); loc != "" {
+		if i := strings.LastIndex(loc, "/instances/"); i >= 0 {
+			return strings.TrimPrefix(loc[i:], "/instances/"), nil
+		}
+	}
+	return in.Alias, nil
+}
+
+// UpdateIdentityProvider replaces an existing IdP instance.
+func (c *Client) UpdateIdentityProvider(ctx context.Context, alias string, in IdentityProvider) error {
+	if strings.TrimSpace(alias) == "" {
+		return fmt.Errorf("keycloak: idp alias is required")
+	}
+	body := idpToRep(in)
+	status, _, err := c.adminCall(ctx, http.MethodPut, "/identity-provider/instances/"+url.PathEscape(alias), body, nil)
+	if err != nil {
+		return err
+	}
+	return mapAdminStatus(status, nil)
+}
+
+// DeleteIdentityProvider removes an IdP instance.
+func (c *Client) DeleteIdentityProvider(ctx context.Context, alias string) error {
+	if strings.TrimSpace(alias) == "" {
+		return fmt.Errorf("keycloak: idp alias is required")
+	}
+	status, _, err := c.adminCall(ctx, http.MethodDelete, "/identity-provider/instances/"+url.PathEscape(alias), nil, nil)
+	if err != nil {
+		return err
+	}
+	return mapAdminStatus(status, nil)
+}
+
+// ListIdentityProviderTypes returns the factory ids Keycloak can build
+// (oidc / saml / cas / ...). Used by the console as the checkProviderID
+// whitelist so the UI only offers supported providers (AUTH-ARCHITECTURE §5).
+func (c *Client) ListIdentityProviderTypes(ctx context.Context) ([]string, error) {
+	var reps []kcProviderType
+	status, _, err := c.adminCall(ctx, http.MethodGet, "/identity-provider/providers", nil, &reps)
+	if err != nil {
+		return nil, err
+	}
+	if err := mapAdminStatus(status, nil); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(reps))
+	for _, r := range reps {
+		out = append(out, r.ID)
+	}
+	return out, nil
+}
+
+// idpToRep rebuilds the KC wire representation from the slim IdentityProvider.
+func idpToRep(in IdentityProvider) map[string]any {
+	return map[string]any{
+		"alias":       in.Alias,
+		"displayName": in.DisplayName,
+		"providerId":  in.ProviderID,
+		"enabled":     in.Enabled,
+		"trustEmail":  in.TrustEmail,
+		"config":      in.Config,
+	}
 }

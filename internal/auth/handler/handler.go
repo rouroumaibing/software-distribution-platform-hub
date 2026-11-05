@@ -1,13 +1,14 @@
 // Package handler — auth endpoints (AUTH-ARCHITECTURE.md §7).
 //
 // Five pre-auth endpoints mounted on /api/v1/auth/* (NO auth middleware):
-//   GET  /login-url     — Flow B entry: KC auth URL + PKCE (backend holds verifier)
-//   POST /login         — Flow A entry: password grant; 400 reason=UPDATE_PASSWORD
-//                         surfaces forced change; 401 invalid credentials
-//   POST /session/code  — Flow B callback: code exchange → session
-//   POST /password      — forced change: verify old (allow not-fully-set-up) →
-//                         ResetPassword temporary=false → clear RA → logout-all
-//   POST /logout        — revoke session + clear cookie
+//
+//	GET  /login-url     — Flow B entry: KC auth URL + PKCE (backend holds verifier)
+//	POST /login         — Flow A entry: password grant; 400 reason=UPDATE_PASSWORD
+//	                      surfaces forced change; 401 invalid credentials
+//	POST /session/code  — Flow B callback: code exchange → session
+//	POST /password      — forced change: verify old (allow not-fully-set-up) →
+//	                      ResetPassword temporary=false → clear RA → logout-all
+//	POST /logout        — revoke session + clear cookie
 //
 // On a successful grant (Flow A login / Flow B code) establishSession decodes
 // the ID token, writes a session row, and sets the httpOnly cookie. The browser
@@ -29,6 +30,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/auth"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/keycloak"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/session"
@@ -50,11 +52,12 @@ type AuthHandler struct {
 	loginClientID string // public login client (sdp-console)
 	redirectURI   string // console OAuth callback URL (Flow B)
 	secureCookie  bool
+	loginMode     auth.LoginModeService // protocol-layer login mode (default|keycloak)
 
 	verifiers *verifierStore
 }
 
-func NewAuthHandler(kc *keycloak.Client, sessions *session.Repository, issuer, loginClientID, redirectURI string, secureCookie bool) *AuthHandler {
+func NewAuthHandler(kc *keycloak.Client, sessions *session.Repository, issuer, loginClientID, redirectURI string, secureCookie bool, loginMode auth.LoginModeService) *AuthHandler {
 	return &AuthHandler{
 		kc:            kc,
 		sessions:      sessions,
@@ -62,19 +65,34 @@ func NewAuthHandler(kc *keycloak.Client, sessions *session.Repository, issuer, l
 		loginClientID: loginClientID,
 		redirectURI:   redirectURI,
 		secureCookie:  secureCookie,
+		loginMode:     loginMode,
 		verifiers:     newVerifierStore(),
 	}
 }
 
-// RegisterRoutes mounts the five endpoints on a router group that has NO auth
+// RegisterRoutes mounts the auth endpoints on a router group that has NO auth
 // middleware (these are pre-auth). Caller passes a bare group, e.g.
 // `r.Group("/api/v1/auth")`.
 func (h *AuthHandler) RegisterRoutes(rg *gin.RouterGroup) {
+	// /config is public (no session yet) so the login page can decide its
+	// shape from the protocol-layer login mode (AUTH-ARCHITECTURE §2).
+	rg.GET("/config", h.Config)
 	rg.GET("/login-url", h.LoginURL)
 	rg.POST("/login", h.Login)
 	rg.POST("/session/code", h.SessionCode)
 	rg.POST("/password", h.Password)
 	rg.POST("/logout", h.Logout)
+}
+
+// Config returns the protocol-layer login mode so the unauthenticated login
+// page can render the right entry (self-hosted form vs SSO redirect).
+func (h *AuthHandler) Config(c *gin.Context) {
+	mode, err := h.loginMode.Get(c.Request.Context())
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OK(c, gin.H{"login": mode})
 }
 
 // --- Flow B entry ---
@@ -121,6 +139,16 @@ func (h *AuthHandler) SessionCode(c *gin.Context) {
 	if err != nil {
 		common.Fail(c, http.StatusBadRequest, err)
 		return
+	}
+	// LoginClientImpersonate: trade the login client's token for a resource-
+	// client (sdp-backend) token so the session carries the audience/azp the
+	// API bearer path validates (AUTH-ARCHITECTURE §2.1 / D2). Identity claims
+	// keep coming from the original grant's ID token. Best-effort: if the
+	// token-exchange permission is not yet granted on sdp-backend, fall back to
+	// the original token so Flow B still establishes a session (cookie path does
+	// not check azp); the exchange is the correct setup for raw-bearer callers.
+	if imp, ierr := h.kc.LoginClientImpersonate(c.Request.Context(), g.AccessToken); ierr == nil && imp.AccessToken != "" {
+		g.AccessToken = imp.AccessToken
 	}
 	if err := h.establishSession(c, g); err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)

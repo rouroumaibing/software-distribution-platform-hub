@@ -29,12 +29,14 @@ import (
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
 	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/platform"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/realmsettings"
 	runnerapi "github.com/rouroumaibing/software-distribution-platform-hub/internal/runnerproto"
 
 	artifacthandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/handler"
 	artifactrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/repository"
 	artifactsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/service"
 	artifactstorage "github.com/rouroumaibing/software-distribution-platform-hub/internal/artifact/storage"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/auth"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/cascade"
 	cataloghandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/handler"
 	catalogrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/repository"
@@ -559,6 +561,10 @@ func main() {
 	pkgVerHandler := packageversion.NewHandler(cfg)
 
 	// --- auth (optional) ----------------------------------------------------
+	// login-mode service (AUTH-ARCHITECTURE §2): DB-backed with an in-memory
+	// cache; the chart seeds the initial value via LOGIN_MODE, switches persist.
+	settingStore := platform.NewGormSettingStore(gdb)
+	loginMode := auth.NewSettingLoginMode(settingStore, cfg.LoginModeSeed)
 	var auth *middleware.Authenticator
 	// §6.4 PAT：无论鉴权开关都先建好 service —— 令牌管理端点走 scoped 组
 	// （dev 模式裸挂，与全部管理面同口径），PAT 校验链仅在开鉴权时有意义。
@@ -568,7 +574,7 @@ func main() {
 	} else {
 		auth, err = middleware.NewAuthenticator(ctx, middleware.AuthConfig{
 			IssuerURL: cfg.KeycloakIssuer,
-			ClientID:  cfg.KeycloakClientID,
+			ClientID:  cfg.KeycloakResourceClientID,
 		})
 		if err != nil {
 			applog.Fatalf("hub: failed to init authenticator: %v", err)
@@ -608,7 +614,7 @@ func main() {
 	// --- BFF session layer (AUTH-ARCHITECTURE.md) -------------------------
 	// Pre-auth endpoints (/api/v1/auth/*) + session-cookie verification path.
 	// No-op in dev (auth disabled); wiring lives in auth_setup.go.
-	_ = setupBFFAuth(r, gdb, auth, kcAdmin, cfg.KeycloakIssuer, cfg.KeycloakClientID, os.Getenv("KEYCLOAK_REDIRECT_URI"))
+	_ = setupBFFAuth(r, gdb, auth, kcAdmin, cfg.KeycloakIssuer, cfg.KeycloakClientID, os.Getenv("KEYCLOAK_REDIRECT_URI"), loginMode)
 
 	api := r.Group("/api/v1")
 
@@ -677,7 +683,7 @@ func main() {
 	permhandler.NewPlatformRoleBindingHandler(platformBindingSvc).RegisterRoutes(platformGroup)
 	// §5.1 变更窗口 / §6.3 平台设置（平台级 KV）：读挂在平台组同权限；
 	// 变更窗口的**执行**在 runSvc 触发闸门（下方 SetChangeWindowGuard）。
-	platformSettingStore := platform.NewGormSettingStore(gdb)
+	platformSettingStore := settingStore // reuse the login-mode setting store
 	platformHandler := platform.NewHandler(platformSettingStore)
 	platformGroup.GET("/platform/settings/change-window", platformHandler.GetChangeWindow)
 	platformGroup.PUT("/platform/settings/change-window", platformHandler.PutChangeWindow)
@@ -702,6 +708,9 @@ func main() {
 	// 退化为手输主体（§7.14 M2 兜底）。
 	if kcAdmin != nil {
 		permhandler.NewKeycloakDirectoryHandler(kcAdmin).RegisterRoutes(platformGroup)
+		// realmsettings 管理面（AUTH-ARCHITECTURE §5）：login 模式切换 + IDP CRUD。
+		// 与目录代理同口径：KC 未配置时不挂载。
+		realmsettings.NewHandler(kcAdmin, loginMode).RegisterRoutes(platformGroup)
 	}
 	// ACCESS-CONTROL §7 / §8 — K8s RBAC 授权层：集群权限 CRUD + kubeconfig
 	// 签发（CSR）+ 吊销（换 subject）。复用环境凭据直连目标集群，hub 不持 CA。

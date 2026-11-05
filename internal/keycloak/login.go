@@ -108,6 +108,28 @@ func (c *Client) doGrant(ctx context.Context, form url.Values) (*GrantResult, er
 	return &g, nil
 }
 
+// LoginClientImpersonate performs an RFC 8693 token exchange: it trades a
+// subject token (the login client's access token obtained via password grant or
+// authorization_code) for a token minted for this hub's resource client
+// (sdp-backend). The resource client validates the audience/azp of API bearer
+// tokens, so sessions must carry it (AUTH-ARCHITECTURE §2.1 / §4, D2). The hub
+// authenticates the exchange as sdp-backend itself (confidential, service
+// account) using its client secret.
+func (c *Client) LoginClientImpersonate(ctx context.Context, subjectToken string) (*GrantResult, error) {
+	if strings.TrimSpace(subjectToken) == "" {
+		return nil, fmt.Errorf("keycloak: subject token is required for token exchange")
+	}
+	form := url.Values{}
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
+	form.Set("client_id", c.ClientID)
+	if c.ClientSecret != "" {
+		form.Set("client_secret", c.ClientSecret)
+	}
+	form.Set("subject_token", subjectToken)
+	form.Set("subject_token_type", "urn:ietf:params:oauth:token-type:access_token")
+	return c.doGrant(ctx, form)
+}
+
 // GetUserByNameExact looks up a single user by exact username match. Returns
 // ErrNotFound when no exact match. Used by the login handler to read
 // requiredActions after a not-fully-set-up grant (confirm UPDATE_PASSWORD vs

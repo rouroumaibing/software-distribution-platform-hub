@@ -36,9 +36,14 @@ type Config struct {
 	DBDSN string
 	// KeycloakIssuer is the OIDC issuer URL. Empty disables auth (dev mode).
 	KeycloakIssuer string
-	// KeycloakClientID is the console's public client ID, checked against the
-	// token's azp claim.
+	// KeycloakClientID is the console's public login client (sdp-console), used
+	// for the password grant and the OIDC code flow.
 	KeycloakClientID string
+	// KeycloakResourceClientID is the hub's own resource client (sdp-backend).
+	// The API bearer/azp verification path checks tokens were issued for THIS
+	// client (AUTH-ARCHITECTURE §2.1 / D2); it differs from KeycloakClientID,
+	// the public login client.
+	KeycloakResourceClientID string
 	// KeycloakAdminClientID is the confidential client the hub uses as a
 	// service account to create org carrier groups (/org:<slug>) in Keycloak.
 	// Defaults to "sdp-backend" when a secret is configured.
@@ -46,6 +51,10 @@ type Config struct {
 	// KeycloakAdminClientSecret is the sdp-backend client secret. Empty disables
 	// group provisioning (dev mode): the hub stays a passive Resource Server.
 	KeycloakAdminClientSecret string
+	// LoginModeSeed is the initial protocol-layer login mode (default|keycloak)
+	// seeded into the DB on first boot; subsequent switches persist in the DB
+	// (AUTH-ARCHITECTURE §2).
+	LoginModeSeed string
 	// LogLevel is the GORM log verbosity: silent / error / warn / info.
 	LogLevel string
 	// BindingReapInterval is how often the expired-grant reaper runs
@@ -190,8 +199,10 @@ func Load() *Config {
 		DBDSN:                     getenv("DB_DSN", "postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable"),
 		KeycloakIssuer:            os.Getenv("KEYCLOAK_ISSUER"),
 		KeycloakClientID:          getenv("KEYCLOAK_CLIENT_ID", "sdp-console"),
+		KeycloakResourceClientID:  getenv("KEYCLOAK_RESOURCE_CLIENT_ID", "sdp-backend"),
 		KeycloakAdminClientID:     getenv("KEYCLOAK_ADMIN_CLIENT_ID", "sdp-backend"),
 		KeycloakAdminClientSecret: os.Getenv("KEYCLOAK_ADMIN_CLIENT_SECRET"),
+		LoginModeSeed:             getenv("LOGIN_MODE", "default"),
 		LogLevel:                  getenv("LOG_LEVEL", "warn"),
 		DBMaxIdleConns:            getenvInt("DB_MAX_IDLE_CONNS", 10),
 		DBMaxOpenConns:            getenvInt("DB_MAX_OPEN_CONNS", 100),

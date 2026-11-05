@@ -22,7 +22,7 @@ spec:
       containers:
         - name: hub
           image: harbor.sdpworkflow.com/sdp/software-distribution-platform-hub:v0.0.1
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: HUB_ADDR
               value: ":8080"

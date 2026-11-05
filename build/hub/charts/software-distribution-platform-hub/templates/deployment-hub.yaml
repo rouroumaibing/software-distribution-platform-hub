@@ -44,6 +44,13 @@ spec:
               value: {{ .Values.auth.keycloakIssuerUrl | default "" | trimSuffix "/" | quote }}
             - name: KEYCLOAK_CLIENT_ID
               value: {{ .Values.auth.keycloakClientId | default "sdp-console" | quote }}
+            # 资源客户端（API bearer/azp 校验以此为准，AUTH-ARCHITECTURE §2.1 / D2）；
+            # 与登录客户端（KEYCLOAK_CLIENT_ID=sdp-console）刻意不同。
+            - name: KEYCLOAK_RESOURCE_CLIENT_ID
+              value: {{ .Values.auth.resourceClientId | default "sdp-backend" | quote }}
+            # 协议层登录模式种子（AUTH-ARCHITECTURE §2）；空 = default。
+            - name: LOGIN_MODE
+              value: {{ .Values.auth.loginModeSeed | default "default" | quote }}
             {{- if and .Values.auth.keycloakIssuerUrl .Values.auth.adminClientSecret }}
             # hub 以 sdp-backend service account 调 Keycloak Admin API（org 载体组预置，
             # cmd/hub main()：secret 缺失只告警、跳过组同步）。取值须与 realm 预置里

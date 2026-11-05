@@ -17,7 +17,7 @@ service:
 
 image:
   imageAddr: harbor.sdpworkflow.com/sdp/software-distribution-platform-hub:v0.0.1
-  pullPolicy: Always
+  pullPolicy: IfNotPresent
 
 resources:
   resources_cpu_requests: 100m
@@ -48,7 +48,11 @@ gateway:
 auth:
   keycloakIssuerUrl: ""
   # 对应 console 的 public client（realm 预置里的 sdp-console）；与 cmd/hub 的 KEYCLOAK_CLIENT_ID 默认值一致。
+  # 仅用于 password grant 与 OIDC code flow（登录客户端），非 API 校验客户端。
   keycloakClientId: "sdp-console"
+  # hub 自有资源客户端（realm 预置里的 sdp-backend）；API bearer/azp 校验以此客户端为准
+  # （AUTH-ARCHITECTURE §2.1 / D2）。与 login client（sdp-console）刻意不同。
+  resourceClientId: "sdp-backend"
   # hub 用 sdp-backend service account 调 Keycloak Admin API（org 载体组预置）。
   # 取值须与 realm 预置里 sdp-backend 的 secret 字面量一致（keycloak-realm-configmap.yaml）。
   # 置空 => issuer 打开时也只告警不建组（cmd/hub main()）。生产改 valueFrom secretKeyRef。
@@ -59,6 +63,9 @@ auth:
   # dev-only 脚手架：hub 解析不到 issuer 域名时，把 <gatewayRoute.hostname> 指到该 IP
   # （本地 = kind 节点 IP，:8443 经 extraPortMappings -> nodePort 30443）。生产用真 DNS，留空。
   resolveHostIp: ""
+  # 协议层登录模式种子（AUTH-ARCHITECTURE §2）：default=自研表单 / keycloak=OIDC code flow。
+  # 首次启动写入 DB，之后由管理员在「平台设置 · 登录设置」切换并持久化；空 = default。
+  loginModeSeed: "default"
 
 # hub 仅支持 postgres，实例需先就绪（P0 由 deploy/manifests/10-postgres.yaml 提供，命名空间 sdp-workflow）
 postgres:

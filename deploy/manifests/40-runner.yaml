@@ -21,7 +21,7 @@ spec:
       containers:
         - name: runner
           image: harbor.sdpworkflow.com/sdp/software-distribution-platform-runner:v0.0.1
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: HUB_GATEWAY_URL
               value: "ws://hub.sdp-workflow.svc:8080/gateway/ws"

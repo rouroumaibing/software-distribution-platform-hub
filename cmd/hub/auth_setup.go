@@ -12,11 +12,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/auth"
 	authhandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/auth/handler"
+	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/keycloak"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/middleware"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/session"
-	applog "github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 )
 
 // setupBFFAuth wires the BFF session layer:
@@ -31,7 +32,7 @@ import (
 // ClearRequiredActions / LogoutAll) need the sdp-backend secret. The grant
 // calls themselves take an explicit loginClientID, so the same SA-tuned Client
 // serves both roles.
-func setupBFFAuth(r *gin.Engine, gdb *gorm.DB, auth *middleware.Authenticator, kcAdmin *keycloak.Client, issuer, loginClientID, redirectURI string) *authhandler.AuthHandler {
+func setupBFFAuth(r *gin.Engine, gdb *gorm.DB, auth *middleware.Authenticator, kcAdmin *keycloak.Client, issuer, loginClientID, redirectURI string, loginMode auth.LoginModeService) *authhandler.AuthHandler {
 	if auth == nil || kcAdmin == nil {
 		return nil
 	}
@@ -40,7 +41,7 @@ func setupBFFAuth(r *gin.Engine, gdb *gorm.DB, auth *middleware.Authenticator, k
 	}
 	sessionRepo := session.NewRepository(gdb)
 	secureCookie := strings.HasPrefix(issuer, "https://")
-	authHandler := authhandler.NewAuthHandler(kcAdmin, sessionRepo, issuer, loginClientID, redirectURI, secureCookie)
+	authHandler := authhandler.NewAuthHandler(kcAdmin, sessionRepo, issuer, loginClientID, redirectURI, secureCookie, loginMode)
 
 	// Session-cookie → claims. The Authenticator's Middleware calls this first;
 	// on error it falls through to the bearer/PAT paths.
