@@ -82,6 +82,8 @@ func (f *fakeDirectory) handler() http.Handler {
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(r.URL.Path, "/users/") && strings.Contains(r.URL.Path, "/groups/"):
+			f.handleUserGroups(w, r)
 		case strings.HasPrefix(strings.TrimPrefix(r.URL.Path, "/admin/realms/sdp/users/"), "u-"):
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -183,6 +185,49 @@ func (f *fakeDirectory) handleMembers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (f *fakeDirectory) handleUserGroups(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rest := strings.TrimPrefix(r.URL.Path, "/admin/realms/sdp/users/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/") // [uid, "groups", gid?]
+	uid := parts[0]
+	if _, ok := f.users[uid]; !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if len(parts) < 3 {
+		out := []Group{}
+		for gid, members := range f.members {
+			if members[uid] {
+				out = append(out, f.groups[gid])
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+		return
+	}
+	gid := parts[2]
+	if _, ok := f.groups[gid]; !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		if f.members[gid] == nil {
+			f.members[gid] = map[string]bool{}
+		}
+		f.members[gid][uid] = true
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodDelete:
+		if !f.members[gid][uid] {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		delete(f.members[gid], uid)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -221,6 +266,10 @@ func TestCreateUser_ReturnsIDFromLocation(t *testing.T) {
 	}
 	if _, ok := f.users[id]; !ok {
 		t.Fatalf("user %s not recorded in fake", id)
+	}
+	if f.users[id]["email"] != "alice@placeholder.invalid" ||
+		f.users[id]["firstName"] != "alice" || f.users[id]["lastName"] != "alice" {
+		t.Fatalf("expected sparse-profile fallback, got %+v", f.users[id])
 	}
 }
 

@@ -47,6 +47,8 @@ type User struct {
 	ID              string   `json:"id"`
 	Username        string   `json:"username"`
 	Email           string   `json:"email,omitempty"`
+	FirstName       string   `json:"firstName,omitempty"`
+	LastName        string   `json:"lastName,omitempty"`
 	Enabled         bool     `json:"enabled"`
 	RequiredActions []string `json:"requiredActions,omitempty"`
 }
@@ -60,12 +62,16 @@ type Group struct {
 }
 
 // NewUser is the create-user input. InitialPassword, when set, is stored as a
-// temporary credential so Keycloak forces a change on first login. Groups, when
-// set, is written in one shot so Keycloak's hierarchical group membership is
-// established at creation (ACCESS-CONTROL §4: user.Groups=["/{org}","/{org}/{group}"]).
+// permanent credential; the first-login password change comes from
+// RequiredActions. FirstName/LastName must be non-empty — Keycloak's token
+// endpoint rejects grants for users missing either field. Groups, when set, is
+// written in one shot so hierarchical membership is established at creation
+// (ACCESS-CONTROL §4: user.Groups=["/{org}","/{org}/{group}"]).
 type NewUser struct {
 	Username        string
 	Email           string
+	FirstName       string
+	LastName        string
 	Enabled         bool
 	RequiredActions []string
 	InitialPassword string
@@ -74,15 +80,23 @@ type NewUser struct {
 
 // UserPatch is the update-user input; nil fields are left untouched.
 type UserPatch struct {
-	Enabled *bool
-	Email   *string
+	Enabled   *bool
+	Email     *string
+	FirstName *string
+	LastName  *string
 }
 
 // kcUserRep is the Keycloak-side user representation for create/update.
+// Enabled is a pointer with omitempty: a full-replacement PUT that only changes
+// requiredActions/email must not send enabled at all — sending its Go zero
+// value (false) would silently disable the user in Keycloak. Nil means "leave
+// the current value untouched"; only create and explicit enable/disable set it.
 type kcUserRep struct {
 	Username        string         `json:"username,omitempty"`
 	Email           string         `json:"email,omitempty"`
-	Enabled         bool           `json:"enabled"`
+	FirstName       string         `json:"firstName,omitempty"`
+	LastName        string         `json:"lastName,omitempty"`
+	Enabled         *bool          `json:"enabled,omitempty"`
 	RequiredActions []string       `json:"requiredActions,omitempty"`
 	Groups          []string       `json:"groups,omitempty"`
 	Credentials     []kcCredential `json:"credentials,omitempty"`
@@ -175,10 +189,31 @@ func (c *Client) CreateUser(ctx context.Context, in NewUser) (string, error) {
 	if strings.TrimSpace(in.Username) == "" {
 		return "", fmt.Errorf("keycloak: username is required")
 	}
-	rep := kcUserRep{Username: in.Username, Email: in.Email, Enabled: in.Enabled, RequiredActions: in.RequiredActions, Groups: in.Groups}
-	// 新建用户即设永久密码（temporary=false）：管理员设的初始密码直接可登录，
-	// 首登不触发强制改密（AUTH-ARCHITECTURE §3 坑3 / D10）。bootstrap admin 的
-	// 强制改密由 realm 种子单独处理，不经此路径。
+	enabled := in.Enabled
+	// KC token endpoint rejects grants when email, firstName or lastName is
+	// empty; the create form has only an optional email and no name fields.
+	email := in.Email
+	if email == "" {
+		email = in.Username + "@placeholder.invalid"
+	}
+	firstName := in.FirstName
+	if firstName == "" {
+		firstName = in.Username
+	}
+	lastName := in.LastName
+	if lastName == "" {
+		lastName = in.Username
+	}
+	rep := kcUserRep{
+		Username:        in.Username,
+		Email:           email,
+		FirstName:       firstName,
+		LastName:        lastName,
+		Enabled:         &enabled,
+		RequiredActions: in.RequiredActions,
+		Groups:          in.Groups,
+	}
+	// 建号凭据为永久密码；首登是否改密由 requiredActions 决定（AUTH-ARCHITECTURE §3 / D10）。
 	if in.InitialPassword != "" {
 		rep.Credentials = []kcCredential{{Type: "password", Value: in.InitialPassword, Temporary: false}}
 	}
@@ -204,10 +239,16 @@ func (c *Client) UpdateUser(ctx context.Context, id string, in UserPatch) error 
 	}
 	rep := kcUserRep{}
 	if in.Enabled != nil {
-		rep.Enabled = *in.Enabled
+		rep.Enabled = in.Enabled
 	}
 	if in.Email != nil {
 		rep.Email = *in.Email
+	}
+	if in.FirstName != nil {
+		rep.FirstName = *in.FirstName
+	}
+	if in.LastName != nil {
+		rep.LastName = *in.LastName
 	}
 	status, _, err := c.adminCall(ctx, http.MethodPut, "/users/"+url.PathEscape(id), rep, nil)
 	if err != nil {
@@ -299,11 +340,13 @@ func (c *Client) ListGroupMembers(ctx context.Context, groupID string, first, ma
 	return users, nil
 }
 
+// KC26 exposes group membership on the user side; /groups/{gid}/members/{uid}
+// returns 404. GET list stays on the group side.
 func (c *Client) AddGroupMember(ctx context.Context, groupID, userID string) error {
 	if groupID == "" || userID == "" {
 		return fmt.Errorf("keycloak: group id and user id are required")
 	}
-	status, _, err := c.adminCall(ctx, http.MethodPut, "/groups/"+url.PathEscape(groupID)+"/members/"+url.PathEscape(userID), nil, nil)
+	status, _, err := c.adminCall(ctx, http.MethodPut, "/users/"+url.PathEscape(userID)+"/groups/"+url.PathEscape(groupID), nil, nil)
 	if err != nil {
 		return err
 	}
@@ -318,7 +361,7 @@ func (c *Client) RemoveGroupMember(ctx context.Context, groupID, userID string) 
 	if groupID == "" || userID == "" {
 		return fmt.Errorf("keycloak: group id and user id are required")
 	}
-	status, _, err := c.adminCall(ctx, http.MethodDelete, "/groups/"+url.PathEscape(groupID)+"/members/"+url.PathEscape(userID), nil, nil)
+	status, _, err := c.adminCall(ctx, http.MethodDelete, "/users/"+url.PathEscape(userID)+"/groups/"+url.PathEscape(groupID), nil, nil)
 	if err != nil {
 		return err
 	}

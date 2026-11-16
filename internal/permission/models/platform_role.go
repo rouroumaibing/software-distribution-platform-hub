@@ -16,8 +16,8 @@ import (
 // `Role` is kept until the P3 migration switches Enforcement over.
 type PlatformRole struct {
 	ID          uuid.UUID      `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	OrgID       *uuid.UUID     `gorm:"type:uuid;index" json:"orgId,omitempty"`
-	Name        string         `gorm:"size:64;not null" json:"name"`
+	OrgID       *uuid.UUID     `gorm:"type:uuid;index;uniqueIndex:idx_platform_roles_org_name,where:org_id IS NOT NULL" json:"orgId,omitempty"`
+	Name        string         `gorm:"size:64;not null;uniqueIndex:idx_platform_roles_org_name,where:org_id IS NOT NULL;uniqueIndex:idx_platform_roles_builtin_name,where:org_id IS NULL" json:"name"`
 	Description string         `json:"description,omitempty"`
 	Actions     datatypes.JSON `gorm:"not null;default:'[]'" json:"actions"`
 	IsSystem    bool           `gorm:"not null;default:false" json:"isSystem"`

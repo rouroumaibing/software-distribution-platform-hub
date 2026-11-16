@@ -221,3 +221,27 @@ func TestSchema_ComponentRolesAreUniquePerOrg(t *testing.T) {
 		t.Errorf("(org_id, name) unique without a WHERE clause does not constrain built-ins (NULLs are distinct), got:\n%s", ddl)
 	}
 }
+
+// 平台角色的名字唯一性与 component_roles 同构：org 内自定义角色按 (org_id, name)
+// 唯一，内置角色（org_id is null，如 platform-admin）的名字全局唯一。后者同时是
+// 启动播种的自然键幂等依据 —— 缺 where org_id is null 那条，多副本并发播种就可能
+// 插出两个 platform-admin，GetByName 随之漂移。
+func TestSchema_PlatformRolesNameUnique(t *testing.T) {
+	rec, gdb := openDryRun(t)
+	if err := gdb.AutoMigrate(&permmodels.PlatformRole{}); err != nil {
+		t.Fatalf("dry-run AutoMigrate: %v", err)
+	}
+	ddl := rec.joined()
+
+	for _, want := range []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS "idx_platform_roles_org_name" ON "platform_roles" ("org_id","name") WHERE org_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS "idx_platform_roles_builtin_name" ON "platform_roles" ("name") WHERE org_id IS NULL`,
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("expected DDL to contain:\n  %s\ngot:\n%s", want, ddl)
+		}
+	}
+	if strings.Contains(ddl, `ON "platform_roles" ("org_id","name")`+"\n") {
+		t.Errorf("(org_id, name) unique without a WHERE clause does not constrain built-ins, got:\n%s", ddl)
+	}
+}

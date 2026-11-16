@@ -158,6 +158,15 @@ func main() {
 	auditRepo := permbrepo.NewAuditLogRepository(gdb)
 	permRequestRepo := permbrepo.NewPermissionRequestRepository(gdb)
 
+	// Seed the built-in platform role and bootstrap admin group binding on a
+	// fresh database. Idempotent: an existing role/binding is left untouched,
+	// so this closes the "rebuilt env has zero platform grants" gap without a
+	// manual SQL import. Failure is fatal — a hub with no platform grant is a
+	// hub where every authenticated user lands on /forbidden.
+	if err := permissionsvc.EnsureBuiltinPlatformRBAC(platformRoleRepo, platformBindRepo); err != nil {
+		applog.Fatalf("hub: ensure builtin platform RBAC: %v", err)
+	}
+
 	// --- services -----------------------------------------------------------
 	roleSvc := permissionsvc.NewRoleService(roleRepo)
 	// roleMappingSvc is the reviewable role→action registry

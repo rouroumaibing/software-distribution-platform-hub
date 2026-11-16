@@ -1,26 +1,31 @@
 -- ============================================================
 -- 09_rbac_multiorg.sql — §7 两层 RBAC 预置角色（多 org 目标态）
--- 表: platform_roles, component_roles
--- 前缀: f1=platform_roles, f2=component_roles
+-- 表: platform_roles, component_roles, platform_role_bindings
 -- 说明:
 --   * 预置角色 OrgID 为 NULL（built-in / 全局），与 V1 内置角色一致；
 --     各 org 的自定义角色由运行时创建。
 --   * actions 为 JSONB 数组，取值见 DATA-MODEL §7.2 / §7.3。
+--   * 平台权限种子（platform_roles / platform_role_bindings）的主键由
+--     gen_random_uuid() 生成，判重按自然键（角色 name / 绑定主体+角色）。
+--     内置角色名由 partial unique index 保证全局唯一（org_id IS NULL），
+--     绑定重复由 NOT EXISTS 按生效判重挡住，与 hub 启动播种同语义。
 -- ============================================================
 
 -- ---------- 平台级角色 ----------
 INSERT INTO platform_roles (id, org_id, name, description, actions, is_system, created_at) VALUES
-('f1000000-0000-0000-0000-000000000001', NULL, 'sdp-admin',
- '平台管理员：全部页面与全局动作',
+(gen_random_uuid(), NULL, 'platform-admin',
+ '平台管理员：全部页面与全局动作（角色名对齐 console L1 守卫与 realm 角色）',
  '["page:overview:view","page:servicetree:view","page:settings:view","org:manage","user:manage","ops:manage","component:create","environment:create"]'::jsonb,
  true, now()),
-('f1000000-0000-0000-0000-000000000002', NULL, 'sdp-viewer',
+(gen_random_uuid(), NULL, 'sdp-viewer',
  '平台只读：仅页面查看',
  '["page:overview:view","page:servicetree:view","page:settings:view"]'::jsonb,
  true, now())
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (name) WHERE org_id IS NULL DO NOTHING;
 
 -- ---------- 组件级角色（ArgoCD Project-scoped 风格） ----------
+-- 组件角色 ID 仍沿用确定前缀：06_permissions.sql 的演示绑定在其之前导入并按 ID 引用。
+-- 它们是演示数据（主体为 dev-keycloak-sub-*），不构成高权对象的可预测标识。
 INSERT INTO component_roles (id, org_id, name, description, actions, is_system, created_at) VALUES
 ('f2000000-0000-0000-0000-000000000001', NULL, 'component-viewer',
  '组件只读',
@@ -60,7 +65,19 @@ ON CONFLICT (id) DO NOTHING;
 -- 主体格式按 §5.3 写死：`subject_type='group'` 时 subject_id 必须与 token claim
 -- **逐字一致**；本 realm 挂的是 `full.path=true`，故**带前导斜杠**。
 -- 注意 `/org:` 是保留前缀（组织维度，不得作为 RBAC 主体）—— 本行不是该前缀。
-INSERT INTO platform_role_bindings (id, org_id, subject_type, subject_id, platform_role_id, expires_at, created_at) VALUES
-('f3000000-0000-0000-0000-000000000001', NULL, 'group', '/sdp-admin',
- 'f1000000-0000-0000-0000-000000000001'::uuid, NULL, now())
-ON CONFLICT (id) DO NOTHING;
+--
+-- platform_role_id 从 platform_roles 按 name 现取，不在 SQL 里写死角色 UUID；
+-- NOT EXISTS 仅挡生效中的重复绑定（expires_at IS NULL OR > now），与仓库
+-- ExistsActive 一致，过期后允许重投。
+INSERT INTO platform_role_bindings (id, org_id, subject_type, subject_id, platform_role_id, expires_at, created_at)
+SELECT gen_random_uuid(), NULL, 'group', '/sdp-admin', pr.id, NULL, now()
+FROM platform_roles pr
+WHERE pr.name = 'platform-admin' AND pr.org_id IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM platform_role_bindings b
+    WHERE b.org_id IS NULL
+      AND b.subject_type = 'group'
+      AND b.subject_id = '/sdp-admin'
+      AND b.platform_role_id = pr.id
+      AND (b.expires_at IS NULL OR b.expires_at > now())
+  );

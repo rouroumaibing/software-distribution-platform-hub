@@ -257,7 +257,30 @@ func (h *AuthHandler) Password(c *gin.Context) {
 		common.Fail(c, http.StatusInternalServerError, err)
 		return
 	}
-	// 5. Revoke stale KC sessions (best-effort — a failure here doesn't undo
+	// 5. KC token endpoint rejects grants when email, firstName or lastName is
+	// empty. Fall back to deterministic placeholders so accounts created with
+	// sparse fields can authenticate after the change (AUTH-ARCHITECTURE §3 / 坑 7).
+	if u.Email == "" || u.FirstName == "" || u.LastName == "" {
+		email, firstName, lastName := u.Email, u.FirstName, u.LastName
+		if email == "" {
+			email = u.Username + "@placeholder.invalid"
+		}
+		if firstName == "" {
+			firstName = u.Username
+		}
+		if lastName == "" {
+			lastName = u.Username
+		}
+		if err := h.kc.UpdateUser(c.Request.Context(), u.ID, keycloak.UserPatch{
+			Email:     &email,
+			FirstName: &firstName,
+			LastName:  &lastName,
+		}); err != nil {
+			common.Fail(c, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	// 6. Revoke stale KC sessions (best-effort — a failure here doesn't undo
 	// the password change).
 	_ = h.kc.LogoutAll(c.Request.Context(), u.ID)
 

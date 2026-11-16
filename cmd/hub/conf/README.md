@@ -63,13 +63,13 @@ hub 的读时自举默认组织（Default/default）与本种子数据互不影�
 
 新增文件请沿用该前缀段，跨文件外键直接引用对应 UUID。
 
-> ⚠️ **已知遗留**：`09_rbac_multiorg.sql`（后加）占用了 `f1`/`f2` 作为
-> `platform_roles`/`component_roles` 的前缀，与本表里的 `f1`=component_configs、
-> `f2`=pipeline_runs **撞名**。因为主键按表唯一、种子之间也没有 FK，功能上无害，
-> 但读种子时容易串台。新文件请从 `f5` 起用，或另开 `g*` 段。
+> ⚠️ **同类遗留**：`10_credentials.sql`（后加）复用 `b1` 作为 credentials 的前缀，
+> 与本表 `b1`=services **撞名** —— 功能上无害（主键按表唯一、种子之间无 FK），
+> 登记在此防误读。
 >
-> 同类：`10_credentials.sql`（后加）复用 `b1` 作为 credentials 的前缀，与本表
-> `b1`=services **撞名** —— 同样功能上无害（主键按表唯一、种子之间无 FK），登记在此防误读。
+> `09_rbac_multiorg.sql` 的 `platform_roles` / `platform_role_bindings` 主键已改由
+> `gen_random_uuid()` 生成、按自然键判重，不占用固定前缀段；平台绑定的角色外键从
+> `platform_roles` 按 name 现取。`component_roles` 沿用 `f2` 固定段（06 的演示绑定按 ID 引用）。
 
 ## 清空重来
 
