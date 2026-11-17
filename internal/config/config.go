@@ -143,6 +143,29 @@ type Config struct {
 	// run service DefaultRunConcurrencyLimit.
 	RunConcurrencyLimit int
 
+	// --- hub 协调框架（coordination-design.md §2.8） ------------------------
+	// CoordinationEnabled（SDP_COORDINATION_ENABLED）打开共享 PG 租约两级选主
+	// （集群锁 + 实例锁）与分片消费框架；关闭（默认）时不装配任何协调件，
+	// 行为与单实例现状等价。
+	CoordinationEnabled bool
+	// CoordinationClusterID（SDP_CLUSTER_ID）是集群锁身份：主备两套部署取
+	// 不同值；启用协调时必填。
+	CoordinationClusterID string
+	// 续约间隔 / 租约 TTL / 心跳窗（默认 2s / 10s / 10s；TTL=5 个续约周期，
+	// 接管最坏 ≈12s）。
+	CoordinationRenewalInterval time.Duration
+	CoordinationLeaseTTL        time.Duration
+	CoordinationHeartbeatWindow time.Duration
+	// 崩溃 worker 行的清理阈值（无 drain 的实例）；心跳过期剔除即正确性
+	// 门，此阈值只做行清理。
+	CoordinationStaleHorizon time.Duration
+	// 分片映射的分片总数与分片队列调参（§2.4/§2.8）。
+	CoordinationShardCount        int
+	CoordinationQueueCapacity     int
+	CoordinationRefillInterval    time.Duration
+	CoordinationConsumeRate       int
+	CoordinationConsumeTimeoutSec int
+
 	// --- §5.2 邮件渠道（决策 #5 收敛：本期仅邮箱） -------------------------
 	// SMTP 全空 = 渠道未配置：订阅端点可用、分发为受控 no-op（NoopMailer），
 	// 站内通知中心不受影响。
@@ -236,6 +259,19 @@ func Load() *Config {
 		// 默认 0 = 关闭（见字段注释）：O-39 超时清扫 + O-41 排队唤醒显式开启。
 		RunSweepInterval:    time.Duration(getenvInt("RUN_SWEEP_INTERVAL", 0)) * time.Second,
 		RunConcurrencyLimit: getenvInt("RUN_CONCURRENCY_LIMIT", 0),
+
+		// 协调框架：默认关闭（§2.8 退化口径——不装配、行为同单实例现状）。
+		CoordinationEnabled:           getenvBool("SDP_COORDINATION_ENABLED", false),
+		CoordinationClusterID:         os.Getenv("SDP_CLUSTER_ID"),
+		CoordinationRenewalInterval:   time.Duration(getenvInt("SDP_COORDINATION_RENEWAL_INTERVAL", 2)) * time.Second,
+		CoordinationLeaseTTL:          time.Duration(getenvInt("SDP_COORDINATION_LEASE_TTL", 10)) * time.Second,
+		CoordinationHeartbeatWindow:   time.Duration(getenvInt("SDP_COORDINATION_HEARTBEAT_WINDOW", 10)) * time.Second,
+		CoordinationStaleHorizon:      time.Duration(getenvInt("SDP_COORDINATION_STALE_HORIZON", 3600)) * time.Second,
+		CoordinationShardCount:        getenvInt("SDP_COORDINATION_SHARD_COUNT", 16),
+		CoordinationQueueCapacity:     getenvInt("SDP_COORDINATION_QUEUE_CAPACITY", 64),
+		CoordinationRefillInterval:    time.Duration(getenvInt("SDP_COORDINATION_REFILL_INTERVAL", 5)) * time.Second,
+		CoordinationConsumeRate:       getenvInt("SDP_COORDINATION_CONSUME_RATE", 10),
+		CoordinationConsumeTimeoutSec: getenvInt("SDP_COORDINATION_CONSUME_TIMEOUT", 0),
 
 		// §5.2 邮件渠道：全空 = 渠道未配置（订阅可存、分发 no-op）。
 		SMTPHost:     getenv("SMTP_HOST", ""),

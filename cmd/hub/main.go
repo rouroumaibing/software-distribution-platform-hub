@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	_ "net/http/pprof" // registers pprof handlers on http.DefaultServeMux
 	"os"
@@ -45,6 +46,7 @@ import (
 	componentrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/component/repository"
 	componentsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/component/service"
 	config "github.com/rouroumaibing/software-distribution-platform-hub/internal/config"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/coordination"
 	credhandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/handler"
 	credrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/repository"
 	credsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/service"
@@ -126,6 +128,34 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// hub 协调框架（coordination-design.md）：共享 PG 租约两级选主。未启用时
+	// 不装配任何协调件，行为与单实例现状等价（§2.8 退化）。分片业务经
+	// coord.AttachWorkload 挂接（ShardSource/TaskConsumer，§2.6 待裁定）。
+	var coord *coordination.Coordinator
+	if cfg.CoordinationEnabled {
+		if cfg.CoordinationClusterID == "" {
+			applog.Fatalf("hub: SDP_COORDINATION_ENABLED=true requires SDP_CLUSTER_ID")
+		}
+		coord = coordination.NewCoordinator(gdb, coordination.Options{
+			ClusterID:       cfg.CoordinationClusterID,
+			PodIP:           coordination.ResolvePodIP(),
+			HTTPPort:        hubPort(cfg.Addr),
+			RenewalInterval: cfg.CoordinationRenewalInterval,
+			LeaseTTL:        cfg.CoordinationLeaseTTL,
+			HeartbeatWindow: cfg.CoordinationHeartbeatWindow,
+			StaleHorizon:    cfg.CoordinationStaleHorizon,
+			ShardCount:      cfg.CoordinationShardCount,
+		})
+		go func() {
+			if err := coord.Run(ctx); err != nil && ctx.Err() == nil {
+				applog.Errorf("coordination: run loop exited: %v", err)
+			}
+		}()
+		applog.Infof("coordination: enabled (cluster %s, pod %s, renewal %s, ttl %s)",
+			cfg.CoordinationClusterID, coordination.ResolvePodIP(),
+			cfg.CoordinationRenewalInterval, cfg.CoordinationLeaseTTL)
+	}
 
 	// --- repositories -------------------------------------------------------
 	orgRepo := orgrepo.NewOrgRepository(gdb)
@@ -607,6 +637,13 @@ func main() {
 
 	r := gin.Default()
 
+	// 协调框架内部上报端点（§4.4）：pod 间直连，仅 master 可收（先自证，
+	// 非 master 409 指路）。外部网关只路由 /api 与 gateway 路径，/internal
+	// 不经公网——网络边界即安全边界。
+	if coord != nil {
+		coordination.NewReportHandler(coord).RegisterRoutes(r)
+	}
+
 	// B-09: Hub-side metrics surface. The Runner already serves /metrics via
 	// controller-runtime's built-in server; this gives the Hub the same
 	// scrape target (hand-rolled Prometheus text, no extra dependency) so a
@@ -728,6 +765,12 @@ func main() {
 	k8srbacResolver := &kubeconfigResolver{envSvc: envSvc, credSvc: credSvc}
 	k8srbacSvc := k8srbac.NewService(k8srbacRepo, k8srbacResolver)
 	k8srbac.NewClusterPermissionHandler(k8srbacSvc).RegisterRoutes(platformGroup)
+
+	// 协调框架 drain（§4.6）：高危平台级动作，与集群权限同组（user:manage；
+	// dev 模式随组裸挂）。
+	if coord != nil {
+		coordination.NewAdminHandler(coord).RegisterRoutes(platformGroup)
+	}
 	// STATUS #19 + ui-12 5.4 组件级审计下沉：审计读端点
 	// 双通道 —— 平台管理员（user:manage）全量可查；组件管理员（component:
 	// manage）须携带 ?componentId= 且查询被 handler 强制钳到该组件。
@@ -932,6 +975,17 @@ func main() {
 		applog.Errorf("hub: forced shutdown (timeout): %v", err)
 	}
 
+	// 协调框架优雅停止（§4.6）：与 HTTP drain 同一例程——退出集群锁续约
+	// （集体租约不置空锁行）、显式置空实例锁、删 worker 注册；与 HTTP 停服
+	// 同序（先停接入，再让出协调身份）。
+	if coord != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := coord.Drain(drainCtx); err != nil {
+			applog.Errorf("hub: coordination drain error: %v", err)
+		}
+		drainCancel()
+	}
+
 	// Stop the dispatch sweeper goroutine now that the server is drained.
 	cancel()
 
@@ -947,6 +1001,17 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// hubPort extracts the listen port from the hub Addr so pod-to-pod calls can
+// target the internal report endpoint.
+func hubPort(addr string) int {
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		if p, perr := strconv.Atoi(port); perr == nil {
+			return p
+		}
+	}
+	return 8080
 }
 
 // componentMetaResolver implements runsvc.ComponentMetaStore: it maps a

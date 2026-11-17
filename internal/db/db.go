@@ -9,6 +9,7 @@ import (
 	catalogmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/catalog/models"
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 	componentmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/component/models"
+	coordmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/coordination/models"
 	credentialmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/credentials/models"
 	environmentmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environment/models"
 	environmentgroupmodels "github.com/rouroumaibing/software-distribution-platform-hub/internal/environmentgroup/models"
@@ -124,6 +125,9 @@ func Open(cfg Config) (*gorm.DB, error) {
 		// ACCESS-CONTROL §7 / §8 — K8s RBAC 授权层绑定台账（hub 侧单表，
 		// 对接 client-go 下发的 CRB/Role 的主体名与签发 hash）。
 		&k8srbacmodels.ClusterBinding{},
+		// 协调框架（coordination-design.md §3.1）——租约表（集群锁/实例锁/
+		// 一次性任务锁共用）与 worker 注册+心跳表，全部协调状态的唯一真源。
+		&coordmodels.Lease{}, &coordmodels.Worker{},
 	); err != nil {
 		return nil, err
 	}
