@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
@@ -373,17 +374,11 @@ func TestSweepPendingRetriesDueJobs(t *testing.T) {
 	done := make(chan struct{})
 	go func() { svc.SweepPending(ctx); close(done) }()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		j := store.mustGet(t, jobID)
-		if j.State == models.DispatchJobDispatched {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("sweeper did not dispatch due job in time, state=%s", j.State)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Explicit condition wait: poll state with a bounded tick until the
+	// sweeper dispatches, instead of a bare sleep loop.
+	require.Eventually(t, func() bool {
+		return store.mustGet(t, jobID).State == models.DispatchJobDispatched
+	}, 2*time.Second, 10*time.Millisecond, "sweeper did not dispatch due job in time")
 	cancel()
 	<-done
 

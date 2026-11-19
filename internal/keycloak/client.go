@@ -229,9 +229,9 @@ type kcGroupRep struct {
 // kcGroupNode is the detailed group representation returned by the Admin REST
 // API (includes id + full path, used to resolve parent groups).
 type kcGroupNode struct {
-	ID   string        `json:"id"`
-	Name string        `json:"name"`
-	Path string        `json:"path"`
+	ID         string              `json:"id"`
+	Name       string              `json:"name"`
+	Path       string              `json:"path"`
 	Attributes map[string][]string `json:"attributes"`
 }
 

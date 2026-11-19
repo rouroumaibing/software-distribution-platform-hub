@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/notification/models"
 )
 
@@ -43,16 +45,11 @@ func (r *recordingMailer) Send(to, subject, _ string) error {
 	return nil
 }
 
+// Explicit condition wait: poll with a bounded tick until cond holds or the
+// deadline expires (no bare sleep).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("等待条件超时")
+	require.Eventually(t, cond, 2*time.Second, 5*time.Millisecond, "等待条件超时")
 }
 
 func TestSubscription_Wants(t *testing.T) {
@@ -105,10 +102,10 @@ func TestDispatch_Filters(t *testing.T) {
 	svc.Dispatch("run_finished", "u3", "t", "b")
 	svc.Dispatch("run_finished", "nobody", "t", "b") // 无订阅行
 
-	time.Sleep(50 * time.Millisecond) // 给误发留时间窗
-	if len(mailer.sent) != 0 {
-		t.Errorf("过滤后不应发信，实际发送: %v", mailer.sent)
-	}
+	// Negative assertion: no mail must be sent for a bounded observation
+	// window. Never() fails as soon as a send appears, with no bare sleep.
+	require.Never(t, func() bool { return len(mailer.sent) != 0 }, 50*time.Millisecond, 5*time.Millisecond,
+		"过滤后不应发信，实际发送: %v", mailer.sent)
 }
 
 func TestDispatch_UnconfiguredChannel(t *testing.T) {

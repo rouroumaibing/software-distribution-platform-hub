@@ -52,9 +52,9 @@ type KeycloakDirectoryHandler struct {
 	// cascade deps are optional: wired via WithCascade so the handler can run
 	// in tests or dev mode without them. When present, user/group deletes also
 	// clear hub RoleBindings + active sessions (坑2, ACCESS-CONTROL §10).
-	platformBindingRepo *repository.PlatformRoleBindingRepository
+	platformBindingRepo  *repository.PlatformRoleBindingRepository
 	componentBindingRepo *repository.BindingRepository
-	sessionRepo         *session.Repository
+	sessionRepo          *session.Repository
 }
 
 func NewKeycloakDirectoryHandler(kc KeycloakDirectory) *KeycloakDirectoryHandler {

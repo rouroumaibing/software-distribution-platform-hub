@@ -1,0 +1,44 @@
+# hub 项目机器判据（harness-workflow audit/scripts/ 从这里读取）。
+# GOVERNANCE_DIR 指向 governance/ 时生效；每段按项目实际调整，调整属配置变更须人审。
+# 本文件是起步最小集，不是权威策略。
+
+schema_version: 1
+
+forbidden_words: [适当, 尽量, 等等, 大概, 合理, 关键, 重要, 必要时]
+
+risk_patterns:
+  - path_glob: "**/permission/**"
+  - path_glob: "**/k8srbac/**"
+  - path_glob: "**/coordination/**"
+  - pattern: '\b(GRANT|REVOKE)\b'
+    skip_paths: &not_prose ["**/*.md", "**/*.txt", "**/*.rst"]
+  - pattern: '\b(DELETE\s+FROM|DROP\s+TABLE|TRUNCATE)\b'
+    skip_paths: *not_prose
+
+ai_writable_paths:
+  - "docs/"
+  - "ai-reports/"
+
+thresholds:
+  ai_writable_max_bytes: 65536
+  verification_stamp:
+    lookback: 50
+    min_ratio: 0.8
+  max_consecutive_gate_failures: 3
+
+protected_paths:
+  - "governance/**"
+  - ".github/workflows/**"
+review_required_paths:
+  - "internal/permission/**"
+  - "internal/k8srbac/**"
+  - "internal/coordination/**"
+
+# flaky 信号人审豁免：R-VER-009 命中测试路径里的 skip/sleep。
+# 5 处 sleep 已按推荐值改为显式条件等待（require.Eventually/Never、runtime.Gosched、
+# DB 时钟条件轮询），不再需要豁免。唯一保留的是合法的 DSN 门控 skip：
+# 无 COORDINATION_TEST_DSN 时跳过 PG 集成测试是条件跳过而非绕过，按推荐值保留。
+# 新增任何 sleep/skip 不在此列，仍会被门拦下。
+static_risk_allowlist:
+  # lease_pg_test.go —— 无 COORDINATION_TEST_DSN 时条件跳过 PG 测试，合法门控。
+  - 't\.Skip\("COORDINATION_TEST_DSN not set'

@@ -17,14 +17,14 @@ type KubeconfigResolver interface {
 // CreateInput is the payload for creating a cluster permission (§7 / §8).
 type CreateInput struct {
 	EnvironmentID uuid.UUID `json:"environmentId"`
-	SubjectKind   string   `json:"subjectKind"` // user|group|org
-	SubjectID     string   `json:"subjectId"`   // hub-side ID
-	SubjectName   string   `json:"subjectName"` // KC group path / username (Group/Org subject name)
-	Role          string   `json:"role"`        // admin|ops|dev|readonly|custom
-	ClusterScoped bool     `json:"clusterScoped"`
-	Namespace     string   `json:"namespace"`
-	Resources     []string `json:"resources"` // custom only
-	Operations    []string `json:"operations"` // custom only
+	SubjectKind   string    `json:"subjectKind"` // user|group|org
+	SubjectID     string    `json:"subjectId"`   // hub-side ID
+	SubjectName   string    `json:"subjectName"` // KC group path / username (Group/Org subject name)
+	Role          string    `json:"role"`        // admin|ops|dev|readonly|custom
+	ClusterScoped bool      `json:"clusterScoped"`
+	Namespace     string    `json:"namespace"`
+	Resources     []string  `json:"resources"`  // custom only
+	Operations    []string  `json:"operations"` // custom only
 }
 
 // Service orchestrates the K8s RBAC layer: resolves target-cluster credentials,

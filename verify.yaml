@@ -1,0 +1,17 @@
+# hub verify 资产（声明式 manifest，schema 见 harness-workflow schemas.md）。
+# 给出怎么 build、怎么起、done 长什么样；done 判据机器可判定，不接受"看起来正常"。
+
+schema_version: 1
+build: "go build ./..."
+start: "make start-dev"
+done:
+  - command: "go vet ./..."
+    evidence: "evidence/vet.log"
+  - command: "go test ./..."
+    evidence: "evidence/test.log"
+  - command: "bash scripts/e2e-verify.sh"
+    evidence: "evidence/*/manifest.json"
+hands:
+  driver: "scripts/e2e-verify.sh 经网关 Flow A 登录 + 打真实业务端点（ops/health 带 DB ping / targets / runs / notifications），落请求响应证据；go test 为 cheap 层"
+  feature_map: "e2e-verify.sh 的 ENDPOINTS 四端点逐接口 HTTP 200 + 响应体即 rubric；internal/ handler 契约场景为 cheap 层"
+timeout_s: 600

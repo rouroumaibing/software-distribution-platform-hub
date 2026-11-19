@@ -12,8 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	rbacv1 "k8s.io/api/rbac/v1"
 	"gorm.io/datatypes"
+	rbacv1 "k8s.io/api/rbac/v1"
 )
 
 // Subject kind（§7.1）：hub 侧主体类型。
@@ -25,20 +25,20 @@ const (
 
 // Cluster role（§7.1 预置五角色）。
 const (
-	RoleAdmin     = "admin"
-	RoleOps       = "ops"
-	RoleDev       = "dev"
-	RoleReadonly  = "readonly"
-	RoleCustom    = "custom"
+	RoleAdmin    = "admin"
+	RoleOps      = "ops"
+	RoleDev      = "dev"
+	RoleReadonly = "readonly"
+	RoleCustom   = "custom"
 )
 
 // Resource class（§7.2 五类）。
 const (
-	ResPods               = "pods"
-	ResDeployments        = "deployments"
-	ResServices           = "services"
-	ResConfigmapsSecrets  = "configmaps-secrets"
-	ResNamespaces         = "namespaces"
+	ResPods              = "pods"
+	ResDeployments       = "deployments"
+	ResServices          = "services"
+	ResConfigmapsSecrets = "configmaps-secrets"
+	ResNamespaces        = "namespaces"
 )
 
 // Operation（§7.2 两类）。

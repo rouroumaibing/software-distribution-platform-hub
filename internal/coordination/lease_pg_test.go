@@ -3,9 +3,12 @@ package coordination
 import (
 	"context"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/google/uuid"
 	"gorm.io/driver/postgres"
@@ -92,7 +95,8 @@ func TestLeaseStoreConcurrentAcquireSingleWinner(t *testing.T) {
 					errs++
 					mu.Unlock()
 				}
-				time.Sleep(time.Millisecond)
+				// Yield to interleave contenders deterministically without a wall-clock sleep.
+				runtime.Gosched()
 			}
 		}()
 	}
@@ -126,7 +130,15 @@ func TestWorkerRegistryUpsertKeepsCreatedAt(t *testing.T) {
 	}
 
 	// 心跳推进 last_heartbeat，created_at 保持（确定性排序键）。
-	time.Sleep(10 * time.Millisecond)
+	// Wait for the DB clock to advance past created_at so the heartbeat
+	// timestamp is strictly later — explicit condition, no fixed sleep.
+	require.Eventually(t, func() bool {
+		var ahead bool
+		if err := gdb.Raw(`SELECT now() > ?`, first.CreatedAt).Scan(&ahead).Error; err != nil {
+			return false
+		}
+		return ahead
+	}, 2*time.Second, time.Millisecond, "DB clock did not advance past created_at")
 	if err := reg.Heartbeat(ctx, "a", "10.0.0.1"); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}

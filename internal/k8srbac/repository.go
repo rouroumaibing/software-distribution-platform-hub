@@ -16,14 +16,14 @@ type ClusterBinding struct {
 	ID            uuid.UUID      `gorm:"type:uuid;primaryKey" json:"id"`
 	EnvironmentID uuid.UUID      `gorm:"type:uuid;index" json:"environmentId"`
 	SubjectKind   string         `gorm:"size:16;not null" json:"subjectKind"` // user|group|org
-	SubjectID     string         `gorm:"size:64;index" json:"subjectId"`     // hub-side ID
-	SubjectName   string         `gorm:"size:255" json:"subjectName"`        // KC group path / username (for Group/Org subject name)
+	SubjectID     string         `gorm:"size:64;index" json:"subjectId"`      // hub-side ID
+	SubjectName   string         `gorm:"size:255" json:"subjectName"`         // KC group path / username (for Group/Org subject name)
 	Role          string         `gorm:"size:32;not null" json:"role"`
 	ClusterScoped bool           `json:"clusterScoped"` // true→ClusterRole+ClusterRoleBinding; false→Role+RoleBinding
 	Namespace     string         `gorm:"size:64" json:"namespace"`
-	Resources     datatypes.JSON `json:"resources"` // custom role only
-	Operations    datatypes.JSON `json:"operations"` // custom role only
-	CertHash      string         `gorm:"size:64" json:"certHash"` // User subject only
+	Resources     datatypes.JSON `json:"resources"`                      // custom role only
+	Operations    datatypes.JSON `json:"operations"`                     // custom role only
+	CertHash      string         `gorm:"size:64" json:"certHash"`        // User subject only
 	Status        string         `gorm:"size:16;not null" json:"status"` // active|revoked
 }
 
