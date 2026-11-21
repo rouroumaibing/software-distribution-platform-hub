@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -194,3 +195,80 @@ func (s *raceBindingStub) ExistsActive(_ *uuid.UUID, _, _ string, roleID uuid.UU
 	return s.exists, nil
 }
 func (s *raceBindingStub) Create(*models.PlatformRoleBinding) error { return errStubMissing }
+
+// componentRoleSeedStub implements componentRoleSeedStore. Create fills a
+// missing ID, mirroring the database's gen_random_uuid() default.
+type componentRoleSeedStub struct {
+	byName      map[string]*models.ComponentRole
+	createCalls int
+}
+
+func newComponentRoleSeedStub() *componentRoleSeedStub {
+	return &componentRoleSeedStub{byName: map[string]*models.ComponentRole{}}
+}
+
+func (s *componentRoleSeedStub) GetByName(name string) (*models.ComponentRole, error) {
+	if r, ok := s.byName[name]; ok {
+		return r, nil
+	}
+	return nil, errStubMissing
+}
+
+func (s *componentRoleSeedStub) Create(item *models.ComponentRole) error {
+	s.createCalls++
+	if item.ID == uuid.Nil {
+		item.ID = uuid.New()
+	}
+	s.byName[item.Name] = item
+	return nil
+}
+
+func TestEnsureBuiltinComponentRoles_SeedsFourAndIsIdempotent(t *testing.T) {
+	store := newComponentRoleSeedStub()
+	if err := EnsureBuiltinComponentRoles(store); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if store.createCalls != 4 {
+		t.Fatalf("expected 4 built-in roles seeded, got %d", store.createCalls)
+	}
+	for _, name := range []string{
+		BuiltinComponentViewerRoleName, BuiltinComponentEditorRoleName,
+		BuiltinComponentApproverRoleName, BuiltinComponentAdminRoleName,
+	} {
+		r, ok := store.byName[name]
+		if !ok {
+			t.Fatalf("missing built-in role %s", name)
+		}
+		if !r.IsSystem {
+			t.Fatalf("built-in role %s must be system", name)
+		}
+		if len(r.Actions) == 0 || string(r.Actions) == "[]" {
+			t.Fatalf("built-in role %s has empty actions", name)
+		}
+	}
+	// Idempotence: a second pass must not create or overwrite existing roles.
+	adminBefore := store.byName[BuiltinComponentAdminRoleName]
+	adminBefore.Description = "locally edited"
+	if err := EnsureBuiltinComponentRoles(store); err != nil {
+		t.Fatalf("second seed: %v", err)
+	}
+	if store.createCalls != 4 {
+		t.Fatalf("idempotence: expected no extra creates, got %d total", store.createCalls)
+	}
+	if store.byName[BuiltinComponentAdminRoleName].Description != "locally edited" {
+		t.Fatal("idempotence: existing role was overwritten")
+	}
+}
+
+func TestEnsureBuiltinComponentRoles_AdminHasTriggerAndRead(t *testing.T) {
+	store := newComponentRoleSeedStub()
+	if err := EnsureBuiltinComponentRoles(store); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	admin := string(store.byName[BuiltinComponentAdminRoleName].Actions)
+	for _, action := range []string{"component:read", "pipeline:read", "pipeline:trigger", "artifact:read", "approval:approve"} {
+		if !strings.Contains(admin, `"`+action+`"`) {
+			t.Fatalf("component-admin missing action %s: %s", action, admin)
+		}
+	}
+}

@@ -22,6 +22,13 @@ func (r *EnvironmentRepository) FindByComponentID(componentID uuid.UUID, p commo
 	})
 }
 
+// FindAll lists environments platform-wide (paginated); backs the platform
+// admin "cluster permissions" page whose environment dropdown spans all
+// components.
+func (r *EnvironmentRepository) FindAll(p common.Pagination) ([]models.Environment, int64, error) {
+	return r.List(p)
+}
+
 // ProductionTargets returns the subset of targetIDs that at least one
 // environment marks as production. It backs the 生产强审批 guard (B-11): a
 // trigger against a production environment must carry an approval gate.

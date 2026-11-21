@@ -20,6 +20,10 @@ func NewEnvironmentHandler(svc *service.EnvironmentService) *EnvironmentHandler 
 func (h *EnvironmentHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	common.RegisterCRUD[models.Environment](rg, "/environments", h.svc)
 	rg.GET("/components/:id/environments", h.ListByComponent)
+	// Platform-wide paged list: the cluster-permissions admin page needs an
+	// environment dropdown spanning all components (RegisterCRUD has no list
+	// route by design).
+	rg.GET("/environments", h.List)
 	// Connection test (§7.12.5): per-dimension checklist, persisted on the env.
 	rg.POST("/environments/:id/test", h.Test)
 	// Direct-exec (§9.5): validates and queues an agent operation; execution
@@ -35,6 +39,16 @@ func (h *EnvironmentHandler) ListByComponent(c *gin.Context) {
 	}
 	p := common.ParsePagination(c)
 	items, total, err := h.svc.ListByComponent(componentID, p)
+	if err != nil {
+		common.Fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	common.OKPaged(c, items, total, p)
+}
+
+func (h *EnvironmentHandler) List(c *gin.Context) {
+	p := common.ParsePagination(c)
+	items, total, err := h.svc.List(p)
 	if err != nil {
 		common.Fail(c, http.StatusInternalServerError, err)
 		return

@@ -47,6 +47,78 @@ type bootstrapBindingStore interface {
 //
 // This removes the dependency on manually importing conf SQL: a freshly
 // rebuilt environment gets a working platform-admin grant on first boot.
+// Built-in component roles seeded at startup. They mirror 09_rbac_multiorg.sql
+// exactly (same names and action sets) so a code-seeded install and a
+// SQL-seeded install grant identical permissions. GetByName("component-admin")
+// is called on every component create (owner auto-binding) and on every
+// authorized request (owner override) — a missing built-in therefore denies
+// every component-scoped route, which is why seeding must not depend on a
+// manual SQL import that deploy-local.sh never runs.
+const (
+	BuiltinComponentViewerRoleName   = "component-viewer"
+	BuiltinComponentEditorRoleName   = "component-editor"
+	BuiltinComponentApproverRoleName = "component-approver"
+	BuiltinComponentAdminRoleName    = "component-admin"
+)
+
+var builtinComponentRoles = []struct {
+	name        string
+	description string
+	actions     string
+}{
+	{
+		BuiltinComponentViewerRoleName, "组件只读",
+		`["component:read","pipeline:read","config:read","artifact:read"]`,
+	},
+	{
+		BuiltinComponentEditorRoleName, "组件编辑 + 触发流水线",
+		`["component:read","component:update","pipeline:read","pipeline:create","pipeline:update","pipeline:delete","pipeline:trigger","config:read","config:update","artifact:read","artifact:download"]`,
+	},
+	{
+		BuiltinComponentApproverRoleName, "组件审批人（仅 approver 持有 approval:approve）",
+		`["component:read","pipeline:read","approval:approve","artifact:read"]`,
+	},
+	{
+		BuiltinComponentAdminRoleName, "组件管理员：组件全部动作（创建组件的 owner 自动绑定此角色，见 §7.4）",
+		`["component:read","component:update","component:delete","component:create","component:manage","pipeline:read","pipeline:create","pipeline:update","pipeline:delete","pipeline:trigger","approval:approve","config:read","config:update","artifact:read","artifact:download"]`,
+	},
+}
+
+// EnsureBuiltinComponentRoles seeds the four built-in component roles at
+// startup, idempotently by name. An existing role is left untouched so a
+// platform admin's edits are never overwritten. IDs are database-generated;
+// no fixed UUID is written, matching the platform-role seed's approach.
+func EnsureBuiltinComponentRoles(roles componentRoleSeedStore) error {
+	for _, builtin := range builtinComponentRoles {
+		role, err := roles.GetByName(builtin.name)
+		if err == nil && role != nil {
+			continue
+		}
+		role = &models.ComponentRole{
+			Name:        builtin.name,
+			Description: builtin.description,
+			Actions:     datatypes.JSON(builtin.actions),
+			IsSystem:    true,
+		}
+		if err := roles.Create(role); err != nil {
+			// A concurrent replica may have inserted it between our read and
+			// write; re-read by name and treat a hit as success.
+			if raced, rerr := roles.GetByName(builtin.name); rerr == nil && raced != nil {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// componentRoleSeedStore is the narrow surface the component-role seed needs.
+// *ComponentRoleRepository satisfies it; stubs keep the seed unit-testable.
+type componentRoleSeedStore interface {
+	GetByName(name string) (*models.ComponentRole, error)
+	Create(item *models.ComponentRole) error
+}
+
 func EnsureBuiltinPlatformRBAC(roles bootstrapRoleStore, bindings bootstrapBindingStore) error {
 	role, err := roles.GetByName(BuiltinPlatformAdminRoleName)
 	if err != nil || role == nil {

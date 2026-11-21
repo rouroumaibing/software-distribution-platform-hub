@@ -47,6 +47,10 @@ func (f *fakeEnvStore) FindByComponentID(uuid.UUID, common.Pagination) ([]models
 	return nil, 0, nil
 }
 
+func (f *fakeEnvStore) FindAll(common.Pagination) ([]models.Environment, int64, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeEnvStore) Update(e *models.Environment) error {
 	if f.updateErr != nil {
 		return f.updateErr
@@ -247,6 +251,40 @@ func TestUpdate_NonKeyChangeKeepsVerification(t *testing.T) {
 	}
 	if next.LastTestAt == nil || next.LastTestResult == "" {
 		t.Error("a display-only change must not invalidate the last test result")
+	}
+}
+
+func TestUpdate_PartialPayloadKeepsServerOwnedFields(t *testing.T) {
+	// Console sends only editable fields in PUT /environments/:id (no key/status/
+	// componentId). A plain gorm Save of that payload would silently zero them.
+	stored := agentEnv()
+	stored.Status = models.EnvStatusVerified
+	stored.LastTestResult = `{"status":"pass"}`
+	store := newFakeEnvStore(stored)
+	svc := NewEnvironmentService(store, &fakeTargetLookup{}, nil)
+
+	partial := &models.Environment{
+		Name:         "renamed",
+		EnvType:      stored.EnvType,
+		TargetID:     stored.TargetID,
+		Namespace:    stored.Namespace,
+		Access:       stored.Access,
+		AccessConfig: stored.AccessConfig,
+	}
+	if err := svc.Update(stored.ID, partial); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if partial.Key != stored.Key {
+		t.Errorf("key = %q, want %q — partial PUT must not clear it", partial.Key, stored.Key)
+	}
+	if partial.ComponentID != stored.ComponentID {
+		t.Errorf("componentId = %s, want %s", partial.ComponentID, stored.ComponentID)
+	}
+	if partial.Status != models.EnvStatusVerified {
+		t.Errorf("status = %q, want verified to survive a display-only partial save", partial.Status)
+	}
+	if partial.LastTestResult != stored.LastTestResult {
+		t.Errorf("lastTestResult = %q, want it preserved", partial.LastTestResult)
 	}
 }
 

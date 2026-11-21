@@ -18,13 +18,17 @@ func NewComponentConfigRepository(db *gorm.DB) *ComponentConfigRepository {
 
 // FindByComponentID lists global + environment-scoped config for a component.
 // Pass environmentID == nil to list only the global defaults.
+// Newest-first: the console config tab renders page 1, and a just-created key
+// must be visible there (ascending order would push it past the page cut).
 func (r *ComponentConfigRepository) FindByComponentID(componentID uuid.UUID, environmentID *uuid.UUID, p common.Pagination) ([]models.ComponentConfig, int64, error) {
 	return r.List(p, func(db *gorm.DB) *gorm.DB {
 		q := db.Where("component_id = ?", componentID)
 		if environmentID != nil {
-			return q.Where("environment_id = ?", *environmentID)
+			q = q.Where("environment_id = ?", *environmentID)
+		} else {
+			q = q.Where("environment_id IS NULL")
 		}
-		return q.Where("environment_id IS NULL")
+		return q.Order("created_at DESC").Order("key DESC")
 	})
 }
 

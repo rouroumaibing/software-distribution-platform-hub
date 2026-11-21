@@ -77,7 +77,9 @@ func (h *ClusterPermissionHandler) Create(c *gin.Context) {
 	}
 	b, kubeconfig, err := h.svc.Create(c.Request.Context(), &in)
 	if err != nil {
-		common.Fail(c, http.StatusInternalServerError, err)
+		// Errors carrying an *APIError (e.g. missing kubeconfig config → 400)
+		// pass through; everything else maps to 500 internally.
+		common.AbortWithError(c, err)
 		return
 	}
 	common.Created(c, createResp{Binding: toResp(b), Kubeconfig: kubeconfig})

@@ -196,6 +196,15 @@ func main() {
 	if err := permissionsvc.EnsureBuiltinPlatformRBAC(platformRoleRepo, platformBindRepo); err != nil {
 		applog.Fatalf("hub: ensure builtin platform RBAC: %v", err)
 	}
+	// Seed the four built-in component roles on the same boot path. Owner
+	// auto-binding on component create and the owner override on every
+	// authorized request both resolve "component-admin" by name; without this
+	// seed a rebuilt env denies every component-scoped route (09 SQL is not
+	// imported by deploy-local.sh). Idempotent and fatal on failure, same as
+	// the platform-role seed.
+	if err := permissionsvc.EnsureBuiltinComponentRoles(componentRoleRepo); err != nil {
+		applog.Fatalf("hub: ensure builtin component roles: %v", err)
+	}
 
 	// --- services -----------------------------------------------------------
 	roleSvc := permissionsvc.NewRoleService(roleRepo)
@@ -1068,18 +1077,20 @@ func (r *kubeconfigResolver) Resolve(ctx context.Context, environmentID uuid.UUI
 	}
 	credRef := env.AccessConfig.KubeCredRef
 	if credRef == "" {
-		return "", fmt.Errorf("k8srbac resolver: environment %s has no kubeCredRef", environmentID)
+		// Missing credential config is a user-fixable precondition, not a
+		// server fault: surface as 400 so the console shows actionable text.
+		return "", common.ErrBadRequest.WithError(fmt.Errorf("environment %s has no kubeCredRef configured", environmentID))
 	}
 	credID, err := uuid.Parse(credRef)
 	if err != nil {
-		return "", fmt.Errorf("k8srbac resolver: environment %s kubeCredRef %q is not a uuid: %w", environmentID, credRef, err)
+		return "", common.ErrBadRequest.WithError(fmt.Errorf("environment %s kubeCredRef %q is not a uuid", environmentID, credRef))
 	}
 	cred, err := r.credSvc.Get(credID)
 	if err != nil {
 		return "", fmt.Errorf("k8srbac resolver: credential %s: %w", credID, err)
 	}
 	if cred.Value == "" {
-		return "", fmt.Errorf("k8srbac resolver: credential %s has empty kubeconfig", credID)
+		return "", common.ErrBadRequest.WithError(fmt.Errorf("credential %s has empty kubeconfig", credID))
 	}
 	return cred.Value, nil
 }

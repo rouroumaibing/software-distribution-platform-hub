@@ -23,6 +23,7 @@ type EnvironmentStore interface {
 	Create(e *models.Environment) error
 	GetByID(id uuid.UUID) (*models.Environment, error)
 	FindByComponentID(componentID uuid.UUID, p common.Pagination) ([]models.Environment, int64, error)
+	FindAll(p common.Pagination) ([]models.Environment, int64, error)
 	Update(e *models.Environment) error
 	Delete(id uuid.UUID) error
 }
@@ -76,15 +77,32 @@ func (s *EnvironmentService) ListByComponent(componentID uuid.UUID, p common.Pag
 	return s.repo.FindByComponentID(componentID, p)
 }
 
+func (s *EnvironmentService) List(p common.Pagination) ([]models.Environment, int64, error) {
+	return s.repo.FindAll(p)
+}
+
 func (s *EnvironmentService) Update(id uuid.UUID, e *models.Environment) error {
 	e.ID = id
-	// Changing a key field (target / namespace / credential ref) drops the env
-	// back to configured_unverified and clears the last test result (§7.12.6).
+	// PUT payloads from the console carry only the editable fields (name / envType /
+	// target / namespace / access / groupId / accessConfig). Everything else is
+	// server-owned: copying a partial payload straight into a gorm Save would zero
+	// out key / status / lastTestResult on every save. Read-modify-write keeps the
+	// server-owned fields from the stored row.
 	previous, err := s.repo.GetByID(id)
-	if err == nil && keyFieldChanged(previous, e) {
-		e.Status = models.EnvStatusConfiguredUnverified
-		e.LastTestAt = nil
-		e.LastTestResult = ""
+	if err == nil {
+		keyChanged := keyFieldChanged(previous, e)
+		e.ComponentID = previous.ComponentID
+		e.Key = previous.Key
+		e.Status = previous.Status
+		e.LastTestAt = previous.LastTestAt
+		e.LastTestResult = previous.LastTestResult
+		if keyChanged {
+			// Changing a key field (target / namespace / credential ref) drops the
+			// env back to configured_unverified and clears the last test result (§7.12.6).
+			e.Status = models.EnvStatusConfiguredUnverified
+			e.LastTestAt = nil
+			e.LastTestResult = ""
+		}
 	}
 	return s.repo.Update(e)
 }
