@@ -335,6 +335,9 @@ func (c *Coordinator) Drain(ctx context.Context) error {
 // AttachWorkload wires the sharded background work (§2.6) and starts its
 // queues. Business binding is deliberately not preset: dispatch_jobs re-drain
 // and agent-op sweeps attach here once their shard dimension is decided.
+//
+// Deprecated: this method is not called from the hub main path; only tests use
+// the shard queue framework today.
 func (c *Coordinator) AttachWorkload(ctx context.Context, src ShardSource, consumer TaskConsumer, qopts QueueOptions) {
 	qm := NewShardQueueManager(src, consumer, qopts)
 	qm.Start(ctx)

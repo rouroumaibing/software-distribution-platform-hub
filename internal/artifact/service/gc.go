@@ -58,9 +58,9 @@ const DefaultArtifactGCBatch = 100
 // NewArtifactGC builds the collector. A nil store is valid (object storage
 // unconfigured): metadata GC still runs, and no object calls are made.
 //
-// 注意 Go 的 typed-nil 陷阱：调用方若把一个 `storage.Client(nil)` 直接转成
-// ObjectDeleter，接口**非 nil** 而底层为 nil，下面 `g.store != nil` 会误判成"已配置"
-// 并在 Delete 上 panic。所以 main.go 只在 `artifactStore != nil` 时才赋值。
+// 调用方从具体驱动指针构造 ObjectDeleter（见 cmd/hub/wire.go 的
+// objectDeleterFromDrivers），避免底层指针为 nil 的接口被视为"已配置"而在
+// Delete 上 panic。
 func NewArtifactGC(repo ExpiredArtifactSource, store ObjectDeleter, batch int) *ArtifactGC {
 	if batch <= 0 {
 		batch = DefaultArtifactGCBatch

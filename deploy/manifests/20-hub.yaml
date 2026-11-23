@@ -40,6 +40,12 @@ spec:
               value: "/data/artifacts"
             - name: ARTIFACT_STORE_PUBLIC_URL
               value: "http://hub.sdp-workflow.svc:8080"
+            # local 驱动签名 URL 的 HMAC 密钥，与 GATEWAY_TOKEN 用途分离，从 Secret 注入。
+            - name: ARTIFACT_STORE_SIGN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hub-artifact-sign
+                  key: signSecret
           ports:
             - containerPort: 8080
           volumeMounts:

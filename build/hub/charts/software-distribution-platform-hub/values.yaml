@@ -80,6 +80,14 @@ artifact:
   driver: local
   localRoot: /data/artifacts
   publicUrl: http://hub.sdp-workflow.svc:8080
+  # Dev seed for the HMAC secret used by local-driver signed URLs. The chart
+  # creates hub-artifact-sign from this value when no external Secret is set.
+  signSecret: sdp-local-artifact-sign-secret-2026
+  # Production: pre-create the Secret and set these fields; the chart then
+  # skips creating a Secret and only references the supplied name/key.
+  signSecretKeyRef:
+    name: ""
+    key: signSecret
   storage: 10Gi
   # PVC 存储类：留空 = 不渲染 storageClassName，沿用集群默认 SC（kind 为 local-path）；
   # 无默认 SC 的集群（如 CCE）须显式指定（例 csi-disk），否则 PVC 一直 Pending。

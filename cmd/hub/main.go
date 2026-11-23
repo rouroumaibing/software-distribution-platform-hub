@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -72,7 +71,6 @@ import (
 	pipelinehandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/handler"
 	pipelinerepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/repository"
 	pipelinesvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/pipeline/service"
-	retentionsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/retention"
 	runhandler "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/handler"
 	runrepo "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/repository"
 	runsvc "github.com/rouroumaibing/software-distribution-platform-hub/internal/run/service"
@@ -95,31 +93,15 @@ import (
 // @in              header
 // @name            Authorization
 
-// getenvInt reads an integer env var, falling back to def when unset/invalid.
-func getenvInt(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
-// getenvFloat reads a float env var, falling back to def when unset/invalid.
-func getenvFloat(key string, def float64) float64 {
-	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f
-		}
-	}
-	return def
-}
-
 func main() {
 	applog.Init()
 	defer applog.Flush()
 
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		applog.Fatalf("hub: invalid configuration: %v", err)
+	}
+	applog.Infof("hub: auth mode=%s (keycloak issuer configured=%t)", cfg.EffectiveAuthMode(), cfg.OIDCEnabled())
 
 	gdb, err := db.Open(cfg.DBConfig())
 	if err != nil {
@@ -242,7 +224,7 @@ func main() {
 	// Provisioning is best-effort everywhere it is used, so a Keycloak outage
 	// never blocks org creation or hub startup.
 	var kcAdmin *keycloak.Client
-	if !cfg.AuthDisabled() {
+	if cfg.OIDCEnabled() {
 		if cfg.KeycloakAdminClientSecret == "" {
 			applog.Warnf("hub: KEYCLOAK_ADMIN_CLIENT_SECRET not set — org carrier groups will not be synced to Keycloak and the directory proxy stays unmounted")
 		} else {
@@ -301,111 +283,17 @@ func main() {
 	taskTemplateSvc.SetVersionPublisher(versionSvc)
 
 	// --- artifact object storage (G5) ----------------------------------------
-	// Driver comes from ARTIFACT_STORE_DRIVER: s3 (MinIO/S3/OSS) or local
-	// (dev-only disk backend, served by the hub with HMAC-signed URLs).
-	// Unconfigured → nil store: metadata keeps working, URL minting 503s.
-	var artifactStore artifactstorage.Client
-	var localArtifactStore *artifactstorage.Local
-	switch cfg.ArtifactStoreDriver {
-	case "s3":
-		s3Store, err := artifactstorage.NewS3(artifactstorage.S3Config{
-			Endpoint:     cfg.ArtifactStoreEndpoint,
-			AccessKey:    cfg.ArtifactStoreAccessKey,
-			SecretKey:    cfg.ArtifactStoreSecretKey,
-			SessionToken: cfg.ArtifactStoreSessionTok,
-			Bucket:       cfg.ArtifactStoreBucket,
-			Region:       cfg.ArtifactStoreRegion,
-			Secure:       cfg.ArtifactStoreSecure,
-		})
-		if err != nil {
-			applog.Fatalf("hub: invalid artifact S3 config: %v", err)
-		}
-		artifactStore = s3Store
-		applog.Infof("hub: artifact storage driver=s3 bucket=%s endpoint=%s", cfg.ArtifactStoreBucket, cfg.ArtifactStoreEndpoint)
-	case "local":
-		secret := cfg.ArtifactStoreSignSecret
-		if secret == "" {
-			secret = cfg.GatewayToken
-		}
-		if secret == "" {
-			applog.Fatalf("hub: local artifact storage needs ARTIFACT_STORE_SIGN_SECRET or GATEWAY_TOKEN to sign URLs")
-		}
-		localStore, err := artifactstorage.NewLocal(cfg.ArtifactStoreLocalRoot, secret, cfg.ArtifactStorePublicURL)
-		if err != nil {
-			applog.Fatalf("hub: cannot init local artifact storage at %s: %v", cfg.ArtifactStoreLocalRoot, err)
-		}
-		artifactStore = localStore
-		// G-8 修复（2026-09-26 E2E）：此前该分支只赋了 artifactStore，声明的
-		// localArtifactStore 从未被赋值 → 下方 `if localArtifactStore != nil`
-		// 恒假 → /api/v1/storage/* 签名路由从未挂载 → upload-url 签发的
-		// PUT/GET URL 全部 404（编译器查不出的 wiring 断裂，实测复现）。
-		localArtifactStore = localStore
-		applog.Infof("hub: artifact storage driver=local root=%s public=%s", cfg.ArtifactStoreLocalRoot, cfg.ArtifactStorePublicURL)
-	default:
-		if cfg.ArtifactStoreDriver != "" {
-			applog.Fatalf("hub: unknown ARTIFACT_STORE_DRIVER %q (want s3|local)", cfg.ArtifactStoreDriver)
-		}
-		applog.Info("hub: artifact storage not configured — downloads/uploads will 503 until ARTIFACT_STORE_DRIVER is set")
-	}
-
-	artifactSvc := artifactsvc.NewArtifactService(artifactRepo, artifactStore, cfg.ArtifactStoreURLExpiry)
-
-	// --- artifact orphan reconciliation (B-16 对账，仅报告) -------------------
-	// 只在**驱动支持列举**时装配：不支持时如实跳过，而不是报出"0 个孤儿"
-	// （那会把"查不了"伪装成"很干净"）。默认关闭（interval=0），见 config 注释。
-	if enumerator, ok := artifactStore.(artifactstorage.Enumerator); ok {
-		reconciler := artifactsvc.NewArtifactReconciler(artifactRepo, enumerator, cfg.ArtifactReconcilePrefix)
-		go reconciler.Run(ctx, cfg.ArtifactReconcileInterval)
-		if cfg.ArtifactReconcileInterval > 0 {
-			applog.Infof("hub: artifact orphan reconciliation enabled every %s (prefix=%q, report-only)",
-				cfg.ArtifactReconcileInterval, cfg.ArtifactReconcilePrefix)
-		}
-	} else if artifactStore != nil {
-		applog.Warnf("hub: artifact storage driver does not support listing — orphan reconciliation (B-16) is skipped, not reported as clean")
-	}
-
-	// --- artifact retention GC (B-16 收口：让 `expires_at` 真正生效) -----------
-	// 与对账**分开**装配：对账只报告（输入有合法歧义），GC 会删（输入是运维自己写下的
-	// 保留期声明）。默认关闭（interval=0），显式设置 ARTIFACT_GC_INTERVAL 才启用。
-	//
-	// typed-nil 处理：把一个 storage.Client(nil) 直接转成 ObjectDeleter 会得到一个
-	// **非 nil** 的接口（底层指针为 nil），GC 里的 `store != nil` 会误判成"已配置"并在
-	// Delete 上 panic。所以只在本进程真的建出了驱动时才赋值。
-	var gcDeleter artifactsvc.ObjectDeleter
-	if artifactStore != nil {
-		gcDeleter = artifactStore
-	}
-	artifactGC := artifactsvc.NewArtifactGC(artifactRepo, gcDeleter, cfg.ArtifactGCBatch)
-	go artifactGC.Run(ctx, cfg.ArtifactGCInterval)
-	if cfg.ArtifactGCInterval > 0 {
-		gcBatch := cfg.ArtifactGCBatch
-		if gcBatch <= 0 {
-			gcBatch = artifactsvc.DefaultArtifactGCBatch
-		}
-		applog.Infof("hub: artifact retention GC enabled every %s (batch=%d, objectStore=%v)",
-			cfg.ArtifactGCInterval, gcBatch, gcDeleter != nil)
-	}
+	// Driver comes from ARTIFACT_STORE_DRIVER; local mode requires an explicit
+	// ARTIFACT_STORE_SIGN_SECRET, separate from the runner gateway token.
+	artifactWire := wireArtifactStorage(cfg)
+	artifactSvc := artifactsvc.NewArtifactService(artifactRepo, artifactWire.client, cfg.ArtifactStoreURLExpiry)
+	wireArtifactBackground(ctx, cfg, artifactRepo, artifactWire)
 
 	// --- 数据生命周期 GC（O-37）：审计日志 / 运行日志 / 制品版本保留与滚删 --------
-	// 默认全关：三个阈值（HUB_AUDIT_LOG_RETENTION_DAYS / HUB_RUN_LOG_RETENTION_DAYS /
-	// HUB_ARTIFACT_VERSION_RETENTION）任一 >0 才删对应数据；删数据的作业绝不由一次
-	// 部署悄悄打开。运行日志仅删终态+超龄，非终态一律不动（防误删进行中数据）。
-	// HUB_RETENTION_GC_INTERVAL=0（默认）关闭整个循环。
-	retentionGC := retentionsvc.NewRetentionGC(
-		gdb,
-		getenvInt("HUB_AUDIT_LOG_RETENTION_DAYS", 0),
-		getenvInt("HUB_RUN_LOG_RETENTION_DAYS", 0),
-		getenvInt("HUB_ARTIFACT_VERSION_RETENTION", 0),
-		getenvInt("HUB_RETENTION_GC_BATCH", 0),
-	)
-	go retentionGC.Run(ctx, time.Duration(getenvInt("HUB_RETENTION_GC_INTERVAL", 0))*time.Second)
-	if !retentionGC.Disabled() {
-		applog.Infof("hub: data-lifecycle retention GC enabled (auditDays=%d runDays=%d artifactVersions=%d)",
-			retentionGC.AuditLogDays, retentionGC.RunLogDays, retentionGC.ArtifactVersions)
-	}
+	wireRetentionGC(ctx, cfg, gdb)
 
 	// --- gateway (Hub side of the Runner long connection) -------------------
-	gw := gateway.New(targetSvc, cfg.GatewayToken)
+	gw := gateway.NewWithIdentityMode(targetSvc, cfg.GatewayToken, gateway.WSIdentityAuto)
 
 	// --- agent op 全链路（§9.5 / §9.9，UNIMPLEMENTED-MODULES-PLAN §16.5）------
 	// 派发器把 queued 的 exec op 组装成 wire payload 推到目标 runner 连接上
@@ -437,23 +325,62 @@ func main() {
 	})
 
 	// run service needs the gateway to dispatch work; the gateway calls back
-	// into the run service when Runner status arrives. Wired here to avoid a
-	// package cycle (run defines a Dispatcher interface, gateway implements it).
+	// into the run service when Runner status arrives (run defines a Dispatcher
+	// interface, gateway implements it).
 	approvalRepo := runrepo.NewPipelineApprovalRepository(gdb)
 	// componentMetaResolver lets the run service denormalize org_id /
 	// component_id onto hub-side PipelineApproval rows (DATA-MODEL §7.4).
 	componentMeta := &componentMetaResolver{pipelineRepo: pipelineRepo, componentRepo: componentRepo}
-	// 第三个参数注入 pipeline SERVICE（而非裸 repo）：run 触发路径改走
-	// pipeline service 的存活校验 (GetByID 软删感知)，不绕开领域层
-	// (run 触发路径未补齐项 #1)。pipelineSvc 满足 run 服务的 PipelineDefStore
-	// 窄接口（GetByID）。
-	runSvc := runsvc.NewPipelineRunService(pipelineRunRepo, taskRunRepo, pipelineSvc, stageRepo, taskTemplateRepo, targetSvc, gw, dispatchJobRepo, taskRunLogRepo, approvalRepo, componentMeta)
-	// 灰度回流快照存储（RUNNER-REFLUX-SPEC §3 / STATUS #8）：ApplyStatus 收到
-	// Deploy 型任务的 Rollout 摘要 → rollout_runs upsert + step_history 追加。
-	runSvc.SetRolloutStore(rolloutRunRepo)
-	// run↔environment 反规范化（ui-12 §5.1 环境覆盖档 / §6.3 配额 org 维度）：
-	// 触发时按 (component, target, namespace) 唯一命中解析环境，落 run 行。
-	runSvc.SetEnvironmentMetaStore(&environmentMetaResolver{envRepo: envRepo})
+
+	// Platform settings back both the change-window guard and the BFF session
+	// layer; the login-mode service reads protocol mode from the same store.
+	settingStore := platform.NewGormSettingStore(gdb)
+	loginMode := auth.NewSettingLoginMode(settingStore, cfg.LoginModeSeed)
+
+	// §5.2 email channel: SMTP absent => subscription endpoints still work,
+	// delivery is a controlled no-op.
+	notificationSvc := notification.New(approvalRepo, pipelineRunRepo)
+	notificationSvc.SetReadStore(notification.NewReadStore(gdb))
+	notificationSvc.SetSubscriptionStore(notification.NewGormSubscriptionStore(gdb))
+	if cfg.SMTPHost != "" && cfg.SMTPFrom != "" {
+		notificationSvc.SetMailer(notification.SMTPMailer{
+			Host: cfg.SMTPHost, Port: cfg.SMTPPort, From: cfg.SMTPFrom,
+			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+		})
+		applog.Infof("notify: email channel enabled via %s", cfg.SMTPHost)
+	} else {
+		notificationSvc.SetMailer(notification.NoopMailer{})
+	}
+
+	// Business-policy assembly lives in wire.go. Every optional collaborator
+	// and switch is passed at construction; nil no longer carries a meaning.
+	runSvc, triggerSvc := wirePipelineRuntime(ctx, cfg, runServiceDeps{
+		gdb:              gdb,
+		runRepo:          pipelineRunRepo,
+		taskRepo:         taskRunRepo,
+		pipelineRepo:     pipelineSvc,
+		stageRepo:        stageRepo,
+		taskTemplateRepo: taskTemplateRepo,
+		targetSvc:        targetSvc,
+		dispatcher:       gw,
+		dispatchRepo:     dispatchJobRepo,
+		logRepo:          taskRunLogRepo,
+		approvalRepo:     approvalRepo,
+		approvalPolicies: approvalRepo,
+		componentMeta:    componentMeta,
+		rolloutStore:     rolloutRunRepo,
+		envMeta:          &environmentMetaResolver{envRepo: envRepo},
+		production:       envRepo,
+		artifacts:        artifactSvc,
+		vars: runVarSource{
+			componentConfigRepo: componentConfigRepo,
+			variableGroups:      variableGroupSvc,
+		},
+		componentGuard: componentLifecycleAdapter{componentSvc},
+		notifySink:     notificationSvc.Dispatch,
+		settingStore:   settingStore,
+		triggerRepo:    pipelinerepo.NewTriggerRepository(gdb),
+	})
 	// 身份帧（RUNNER-REFLUX-SPEC §5 / STATUS #2）：写 targets.agent_version；
 	// 若该目标存在 running 的 upgrade op 且上报版本与目标一致 → 对账到 succeeded
 	// （INSTALL-UPGRADE-EXECUTOR-DESIGN §2.2，WS 中断是升级的预期行为，对账在 hub）。
@@ -511,60 +438,12 @@ func main() {
 			applog.Infof("gateway: install reconcile failed for target %s: %v", targetID, err)
 		}
 	})
-	// upgrade 超时对账器（同设计 §4.2）：running 的 upgrade op 超过 15min 无
-	// 重连即判 failed——台账可观测，不静默悬挂。
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := agentOpSvc.SweepUpgradeTimeouts(ctx, 15*time.Minute); err != nil {
-					applog.Infof("agentop: upgrade timeout sweep: %v", err)
-				}
-				// B4 审批超时回收（B-11 语义复用）：pending_approval 的 upgrade
-				// op 超过 24h 无人审批 → 自动判 failed，不静默悬挂也不静默放行。
-				if err := agentOpSvc.SweepApprovalTimeouts(ctx, 24*time.Hour); err != nil {
-					applog.Infof("agentop: approval timeout sweep: %v", err)
-				}
-			}
-		}
-	}()
-	// Background sweeper retries failed dispatch jobs on backoff. Runs until
-	// the app context is cancelled at shutdown.
-	go runSvc.SweepPending(ctx)
+	// upgrade/install/approval timeout sweeps for the agent-op ledger.
+	wireAgentOpReconciliation(ctx, agentOpSvc)
+
 	// Background reaper physically deletes expired role bindings (§7.4).
 	go reaper.Run(ctx, cfg.BindingReapInterval)
-	// B-11 生产强审批：向生产环境触发时，流水线必须带人工审核阶段。
-	// envRepo 同时满足窄接口 ProductionPolicy（只暴露一次批量查询）。
-	runSvc.SetProductionPolicy(envRepo)
-	// G-2：任务 Succeeded 时把 Produces 键登记进制品库（ApplyStatus 回调）。
-	runSvc.SetArtifactRegistrar(artifactSvc)
-	// N-26 变量分层解析：触发参数 = 声明默认 < 变量组 < 组件变量 < 运行输入。
-	runSvc.SetVarSource(runVarSource{
-		componentConfigRepo: componentConfigRepo,
-		variableGroups:      variableGroupSvc,
-	})
-	// G-1：注入执行 Job 的 ServiceAccount（runner 侧幂等 ensure SA+RBAC）。
-	runSvc.SetJobServiceAccount(cfg.JobServiceAccount)
-	// B-11 审批超时：把超过任务时限仍未决策的审批自动拒绝（用户故事 Epic 8）。
-	go runSvc.RunApprovalTimeouts(ctx, cfg.ApprovalTimeoutInterval)
-	// O-39 运行级超时清扫 + O-41 排队唤醒：默认 0 = 关闭（RUN_SWEEP_INTERVAL）。
-	runSvc.SetRunConcurrencyLimit(cfg.RunConcurrencyLimit)
-	go runSvc.RunBackground(ctx, cfg.RunSweepInterval)
 
-	// --- 触发器（ui-12 §4.3 / N-21）：cron 调度 + webhook + run.finished 事件 ---
-	triggerRepo := pipelinerepo.NewTriggerRepository(gdb)
-	triggerSvc := pipelinesvc.NewTriggerService(triggerRepo, gdb, runSvc)
-	// run.finished 首版 = 函数调用无总线：终态落库后同步评估 event 触发器。
-	runSvc.SetRunFinishedHook(triggerSvc.EvaluateRunFinished)
-	// 内建 cron 调度器：每分钟 tick，FOR UPDATE SKIP LOCKED 抢占防多副本重复触发。
-	triggerSvc.StartScheduler(ctx, cfg.TriggerTickInterval)
-
-	// 审批策略（ui-12 §5.1 / 决策 #4）：组件默认 + 环境覆盖；审批中心三视图。
-	runSvc.SetApprovalPolicyStore(approvalRepo)
 	approvalCenterHandler := runhandler.NewApprovalCenterHandler(runSvc)
 
 	// --- handlers -----------------------------------------------------------
@@ -609,16 +488,14 @@ func main() {
 	pkgVerHandler := packageversion.NewHandler(cfg)
 
 	// --- auth (optional) ----------------------------------------------------
-	// login-mode service (AUTH-ARCHITECTURE §2): DB-backed with an in-memory
-	// cache; the chart seeds the initial value via LOGIN_MODE, switches persist.
-	settingStore := platform.NewGormSettingStore(gdb)
-	loginMode := auth.NewSettingLoginMode(settingStore, cfg.LoginModeSeed)
+	// The effective AuthMode is logged at startup; OIDC middleware and the
+	// PAT verification chain only run in oidc mode.
 	var auth *middleware.Authenticator
 	// §6.4 PAT：无论鉴权开关都先建好 service —— 令牌管理端点走 scoped 组
 	// （dev 模式裸挂，与全部管理面同口径），PAT 校验链仅在开鉴权时有意义。
 	patSvc := permissionsvc.NewPATService(permbrepo.NewPATRepository(gdb))
-	if cfg.AuthDisabled() {
-		applog.Info("hub: auth disabled (no KEYCLOAK_ISSUER set) — dev mode")
+	if !cfg.OIDCEnabled() {
+		applog.Info("hub: dev auth mode — OIDC middleware disabled")
 	} else {
 		auth, err = middleware.NewAuthenticator(ctx, middleware.AuthConfig{
 			IssuerURL: cfg.KeycloakIssuer,
@@ -669,7 +546,7 @@ func main() {
 	// --- BFF session layer (AUTH-ARCHITECTURE.md) -------------------------
 	// Pre-auth endpoints (/api/v1/auth/*) + session-cookie verification path.
 	// No-op in dev (auth disabled); wiring lives in auth_setup.go.
-	_ = setupBFFAuth(r, gdb, auth, kcAdmin, cfg.KeycloakIssuer, cfg.KeycloakClientID, os.Getenv("KEYCLOAK_REDIRECT_URI"), loginMode)
+	_ = setupBFFAuth(r, gdb, auth, kcAdmin, cfg.KeycloakIssuer, cfg.KeycloakClientID, cfg.KeycloakRedirectURI, loginMode)
 
 	api := r.Group("/api/v1")
 
@@ -692,15 +569,15 @@ func main() {
 	// 认证接口限流（O-34）：单副本 in-memory 令牌桶，按客户端 IP 限速，防暴破。
 	// 多副本下不跨副本共享计数（已在 ratelimit.go 注记），需全局限流时前置 redis。
 	// HUB_RATE_LIMIT_RPS=0（默认）即关闭。
-	if rps := getenvFloat("HUB_RATE_LIMIT_RPS", 0); rps > 0 {
-		rl := middleware.NewRateLimit(rps, getenvInt("HUB_RATE_LIMIT_BURST", int(rps*2)+1))
+	if cfg.RateLimitRPS > 0 {
+		rl := middleware.NewRateLimit(cfg.RateLimitRPS, cfg.RateLimitBurst)
 		go rl.StartSweeper(10 * time.Minute)
 		api.Use(rl.Handler())
 	}
-	// CORS（O-34）：默认空白名单 = 不处理（同源场景）。仅当显式配置 HUB_CORS_ORIGINS
-	// 时才对白名单域回显 Access-Control-*，避免配错阻断前端或误开通任意域。
-	if origins := os.Getenv("HUB_CORS_ORIGINS"); origins != "" {
-		api.Use(middleware.CORS(strings.Split(origins, ",")))
+	// CORS（O-34）：默认空白名单 = 不处理（同源场景）。仅当显式配置
+	// HUB_CORS_ORIGINS 时才回显 Access-Control-*，避免误开通任意域。
+	if len(cfg.CORSOrigins) > 0 {
+		api.Use(middleware.CORS(cfg.CORSOrigins))
 	}
 
 	// Org / target / catalog / component management — no component-scoped
@@ -737,7 +614,7 @@ func main() {
 	permhandler.NewPlatformRoleHandler(platformRoleSvc).RegisterRoutes(platformGroup)
 	permhandler.NewPlatformRoleBindingHandler(platformBindingSvc).RegisterRoutes(platformGroup)
 	// §5.1 变更窗口 / §6.3 平台设置（平台级 KV）：读挂在平台组同权限；
-	// 变更窗口的**执行**在 runSvc 触发闸门（下方 SetChangeWindowGuard）。
+	// 变更窗口的**执行**在 runSvc 触发闸门（装配于 wire.go）。
 	platformSettingStore := settingStore // reuse the login-mode setting store
 	platformHandler := platform.NewHandler(platformSettingStore)
 	platformGroup.GET("/platform/settings/change-window", platformHandler.GetChangeWindow)
@@ -828,45 +705,7 @@ func main() {
 			h,
 		}
 	}
-	// 通知中心（STATUS §2 #7）：把待审批运行聚合成铃铛通知流。
-	// RUNNER-REFLUX-SPEC §6（STATUS #20 hub 半边）：挂上服务端已读游标，
-	// List 响应带 unreadCount（服务端时钟），read-mark 只前进不回退。
-	notificationSvc := notification.New(approvalRepo, pipelineRunRepo)
-	notificationSvc.SetReadStore(notification.NewReadStore(gdb))
-	// §5.2 邮箱订阅（决策 #5 收敛）：SMTP 未配置时挂 NoopMailer —— 订阅端点
-	// 可用、分发为受控 no-op；配置了才真正发信。
-	notificationSvc.SetSubscriptionStore(notification.NewGormSubscriptionStore(gdb))
-	if cfg.SMTPHost != "" && cfg.SMTPFrom != "" {
-		notificationSvc.SetMailer(notification.SMTPMailer{
-			Host: cfg.SMTPHost, Port: cfg.SMTPPort, From: cfg.SMTPFrom,
-			Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
-		})
-		applog.Infof("notify: email channel enabled via %s", cfg.SMTPHost)
-	} else {
-		notificationSvc.SetMailer(notification.NoopMailer{})
-	}
-	// 事件源：run 终态 / 待审批播种 → 按订阅白名单镜像到邮件渠道。
-	runSvc.SetNotifySink(notificationSvc.Dispatch)
-	// §6.1 废弃治理：deprecated 组件禁新触发（历史运行与制品保留）。
-	runSvc.SetComponentGuard(componentLifecycleAdapter{componentSvc})
-	// §5.1 变更窗口闸门：每次触发实时读设置（改配置即时生效，无需重启）。
-	// 窗口外触发 → 409 + 原因（与 B-11 生产强审批同拒绝形状，前端原样渲染）。
-	runSvc.SetChangeWindowGuard(func() error {
-		cw, err := platform.LoadChangeWindow(platformSettingStore)
-		if err != nil {
-			// 读取失败不放也不拦（fail-open）：闸门是"时机管控"，DB 故障
-			// 时把全部触发挡死会放大故障面；err 仍返回上层记日志。
-			applog.Warnf("platform: change window read failed, allowing trigger: %v", err)
-			return nil
-		}
-		if platform.InWindow(cw, time.Now()) {
-			return nil
-		}
-		return common.DomainErrorWithReasons(common.KindPipeline, http.StatusConflict, 6,
-			"outside the change window",
-			fmt.Sprintf("当前不在变更窗口内（%s–%s，星期 %v），触发已被平台变更窗口拦截",
-				cw.Start, cw.End, cw.Weekdays))
-	})
+	// 通知中心（STATUS §2 #7）：铃铛流 read-mark 游标由服务端时钟维护。
 	notificationHandler := notification.NewHandler(notificationSvc)
 	scoped := api.Group("/")
 	scoped.GET("/notifications", notificationHandler.List)
@@ -932,8 +771,8 @@ func main() {
 	// Local-driver signed storage routes (G5) — mounted on the root engine,
 	// outside auth middleware: browser downloads carry no Authorization
 	// header, the HMAC token IS the authorization.
-	if localArtifactStore != nil {
-		r.Any(artifactstorage.RoutePrefixPattern(), localArtifactStore.GinHandler())
+	if artifactWire.local != nil {
+		r.Any(artifactstorage.RoutePrefixPattern(), artifactWire.local.GinHandler())
 	}
 
 	// --- optional debug / docs endpoints ----------------------------------

@@ -51,7 +51,9 @@ type ServiceStore interface {
 	FindByServiceTreeID(uuid.UUID, common.Pagination) ([]models.Service, int64, error)
 }
 
-// ServiceService satisfies common.CRUDService[models.Service].
+// ServiceService is the application service for catalog ServiceNode rows
+// (业务服务节点 under an org's service tree). The "Service" in the name is the
+// layered-architecture suffix, distinct from the domain ServiceNode type.
 type ServiceService struct {
 	repo       ServiceStore
 	runCounter ActiveRunCounter

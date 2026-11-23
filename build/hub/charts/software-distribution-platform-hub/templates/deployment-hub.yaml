@@ -96,6 +96,12 @@ spec:
               value: {{ .Values.artifact.localRoot }}
             - name: ARTIFACT_STORE_PUBLIC_URL
               value: {{ .Values.artifact.publicUrl }}
+            # Local 驱动的 URL 签名密钥，独立于 GATEWAY_TOKEN；从 Secret 注入。
+            - name: ARTIFACT_STORE_SIGN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.artifact.signSecretKeyRef.name | default "hub-artifact-sign" }}
+                  key: {{ .Values.artifact.signSecretKeyRef.key | default "signSecret" }}
             # G-1（2026-09-26）：注入执行 Job 的 ServiceAccount 名，runner 会在
             # 运行命名空间幂等 ensure 该 SA + 最小部署 Role/RoleBinding。
             # 置空回退旧行为（Job 用 ns default SA，无部署权限）。

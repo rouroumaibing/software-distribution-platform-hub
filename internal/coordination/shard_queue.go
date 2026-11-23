@@ -1,3 +1,5 @@
+// Deprecated: the sharded queue types in this file are not attached to the hub
+// main path. Only tests call ShardSource / AttachWorkload today.
 package coordination
 
 import (

@@ -23,17 +23,7 @@
 
 ## 镜像构建环境要求（containerd 路线）
 
-`make package` / `build/hub/build.sh` 在无 docker 的环境（如 CCE 托管节点）走 nerdctl + buildkitd 复用宿主 containerd 构建镜像，对工具链版本有**硬要求**：
-
-| 工具 | 版本要求 | 原因 |
-| --- | --- | --- |
-| nerdctl | **>= 2.x** | `nerdctl save` 默认输出 docker 归档格式，无 `--format` 旗标；`sdp_save` 按此直写 |
-| buildkitd | **>= v0.34** | `--containerd-worker` 为 string 型（true/false/auto），`build.sh` 用 `--containerd-worker=true` 显式赋值拉起；裸旗标会把后面的 `--addr` 当值吃掉导致 `strconv.ParseBool` 崩溃 |
-| containerd | 复用宿主托管实例 | **不要安装 docker / containerd.io**（会与宿主 containerd.service 冲突，CCE 节点尤其如此） |
-
-版本要求的统一权威见 docs 仓 [`shared/BUILD-TOOLCHAIN.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/shared/BUILD-TOOLCHAIN.md)。
-
-构建容器内还屏蔽了节点坏环境：`GOPROXY` 经 `SDP_GOPROXY` 覆盖（默认 `https://goproxy.cn,direct`）、`go build` 加 `-buildvcs=false`、`Dockerfile` 的 apt 源经 `APT_MIRROR` 参数化（默认华为云镜像）；详见 BUILD-TOOLCHAIN §2。
+版本要求见 docs 仓 [`shared/BUILD-TOOLCHAIN.md`](https://github.com/rouroumaibing/software-distribution-platform-docs/blob/main/shared/BUILD-TOOLCHAIN.md)。
 
 ## 模块地图（`internal/`）
 
@@ -50,6 +40,7 @@
 
 - **schema SSOT = AutoMigrate + `migrations/`**：列新增交给 AutoMigrate；删列/改名/列宽变更写 `migrations/*.sql`（幂等，现库需手工 `kubectl exec postgres -- psql` 执行）。
 - **agent op 全链路（2026-09-23 第十八批 §16.5）**：`exec` 创建即经 gateway WS 派发（`cmd/hub/agentop_dispatcher.go` 组装 payload；kubeconfig-access 环境在此解密凭据下发），runner `internal/agentops` 在目标集群建 Job 执行、`agent_op_status/log` 回传；输出落 `agent_op_logs`，SSE = `GET /agent-ops/:id/stream`（重放+增量），轮询兜底 `GET /agent-ops/:id`。`install` / `upgrade` **留守 queued 不派发**——执行器依赖 §9.9 bootstrap 流程（独立特性，裁定见 plan §16.5）。
+- `internal/coordination/` 的分片队列（`ShardQueue` / `ShardSource` / `AttachWorkload`）当前未挂接到主路径，仅测试调用；阅读主链路时可跳过。
 
 ## 运行时配置（环境变量，`internal/config`）
 
@@ -57,9 +48,16 @@
 | --- | --- | --- |
 | `DB_DSN` | `postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable` | Postgres 连接串 |
 | `HUB_ADDR` | `:8080` | 监听地址（部署态为 TLS：wss/https 同端口 8080；证书由 chart 经 `hub-tls` 注入 `TLSCertFile`/`TLSKeyFile`，未配置则回退明文） |
-| `KEYCLOAK_ISSUER` | **空** | 空 ⇒ `AuthDisabled()`（dev 姿态：auth 中间件与 org 组预置同时关闭）。须与 Keycloak 实际通告的 issuer **一字不差**（KC 26 通告短名 svc、剥默认端口） |
+| `SDP_AUTH_MODE` | 按 `KEYCLOAK_ISSUER` 派生 | 显式鉴权模式 `oidc\|dev`；未设置时 issuer 为空 ⇒ dev。启动日志打印生效模式 |
+| `KEYCLOAK_ISSUER` | **空** | 空且 `SDP_AUTH_MODE` 未设置 ⇒ dev 模式（auth 中间件与 org 组预置同时关闭）。须与 Keycloak 实际通告的 issuer **一字不差**（KC 26 通告短名 svc、剥默认端口） |
+| `KEYCLOAK_REDIRECT_URI` | 空 | console OIDC 回调地址，交给 BFF session 层 |
 | `KEYCLOAK_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_ID` / `KEYCLOAK_ADMIN_CLIENT_SECRET` | `sdp-console` / `sdp-backend` / 空 | JWT `azp` 校验 / org 组预置的 Admin API 凭据 |
+| `ARTIFACT_STORE_SIGN_SECRET` | **空（local 模式必填）** | local 驱动签名 URL 的 HMAC 密钥，独立于 `GATEWAY_TOKEN`；空则 local 模式拒绝启动 |
+| `HUB_AUDIT_LOG_RETENTION_DAYS` / `HUB_RUN_LOG_RETENTION_DAYS` / `HUB_ARTIFACT_VERSION_RETENTION` / `HUB_RETENTION_GC_BATCH` / `HUB_RETENTION_GC_INTERVAL` | `0` | 数据生命周期保留阈值与 GC 周期（秒），`0` = 关闭 |
+| `HUB_RATE_LIMIT_RPS` / `HUB_RATE_LIMIT_BURST` / `HUB_CORS_ORIGINS` | `0` / `2*rps+1` / 空 | 认证接口限流与 CORS 白名单（逗号分隔），空/零 = 不启用 |
 | `PACKAGE_VERSION_CONSOLE/HUB/RUNNER` | `dev` | 版本矩阵；集群内由 chart 的 `package-versions` ConfigMap 注入 |
+
+> chart 通过 `artifact.signSecretKeyRef` 从 Secret 注入该密钥。不设置时 chart 用 `artifact.signSecret` 创建开发用 `hub-artifact-sign` Secret；生产应预建 Secret 并设置 `artifact.signSecretKeyRef.name` / `.key`，不在明文 values 中放生产密钥。
 
 > `CREDENTIAL_ENCRYPTION_KEY` **不在** `internal/config` 的装配清单里：它由凭据编解码包 `internal/credentials/codec`（`codec.go`）直接读取，用于凭据 AES-GCM 信封加密；空 ⇒ 凭据明文落库（dev），32 字节 key ⇒ 加密。
 

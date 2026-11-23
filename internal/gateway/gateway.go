@@ -55,11 +55,24 @@ type ConnectHandler func(ctx context.Context, targetID uuid.UUID)
 // TargetName mismatch is audited and the frame ignored (anti-spoofing).
 type AgentInfoHandler func(ctx context.Context, targetID uuid.UUID, payload *runnerapi.AgentInfoPayload)
 
+// WSIdentityMode selects how ServeWS resolves the Runner identity from the
+// Bearer header. Auto keeps the historical detection order for compatibility;
+// the other modes require one specific identity source.
+type WSIdentityMode string
+
+const (
+	WSIdentityAuto      WSIdentityMode = "auto"
+	WSIdentityShared    WSIdentityMode = "shared-token"
+	WSIdentityEnroll    WSIdentityMode = "enroll"
+	WSIdentityPerTarget WSIdentityMode = "per-target"
+)
+
 // HubServer accepts Runner WebSocket connections and multiplexes dispatch /
 // inbound messages across them, keyed by target UUID.
 type HubServer struct {
 	targetSvc    *service.TargetService
 	gatewayToken string
+	identityMode WSIdentityMode
 
 	upgrader websocket.Upgrader
 
@@ -78,12 +91,21 @@ type HubServer struct {
 	targetNames map[uuid.UUID]string
 }
 
-// New constructs a HubServer. gatewayToken, when non-empty, must match the
-// Runner's bearer token; an empty token accepts any connection (dev only).
+// New constructs a HubServer with auto identity detection (backward compatible).
 func New(targetSvc *service.TargetService, gatewayToken string) *HubServer {
+	return NewWithIdentityMode(targetSvc, gatewayToken, WSIdentityAuto)
+}
+
+// NewWithIdentityMode constructs a HubServer with an explicit identity source.
+// An empty mode is treated as auto.
+func NewWithIdentityMode(targetSvc *service.TargetService, gatewayToken string, mode WSIdentityMode) *HubServer {
+	if mode == "" {
+		mode = WSIdentityAuto
+	}
 	return &HubServer{
 		targetSvc:    targetSvc,
 		gatewayToken: gatewayToken,
+		identityMode: mode,
 		upgrader: websocket.Upgrader{
 			// Runners dial from inside managed clusters; restricting origin
 			// is moot for a non-browser WS client, so we accept all. Tighten
@@ -92,6 +114,17 @@ func New(targetSvc *service.TargetService, gatewayToken string) *HubServer {
 		},
 		conns:       make(map[uuid.UUID]*websocket.Conn),
 		targetNames: make(map[uuid.UUID]string),
+	}
+}
+
+// SetIdentityMode overrides the identity source. Unknown modes fall back to
+// auto so a typo cannot lock out legitimate runners.
+func (h *HubServer) SetIdentityMode(mode WSIdentityMode) {
+	switch mode {
+	case WSIdentityAuto, WSIdentityShared, WSIdentityEnroll, WSIdentityPerTarget:
+		h.identityMode = mode
+	default:
+		h.identityMode = WSIdentityAuto
 	}
 }
 
@@ -130,27 +163,63 @@ func (h *HubServer) ServeWS(c *gin.Context) {
 	token := extractBearer(c.GetHeader("Authorization"))
 	targetName := c.GetHeader("X-Target-Name")
 
-	if h.gatewayToken != "" && token != h.gatewayToken {
-		var respHeader http.Header
+	switch h.identityMode {
+	case WSIdentityShared:
+		if h.gatewayToken == "" || token != h.gatewayToken {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid gateway token"})
+			return
+		}
+		applog.Infof("gateway: WS identity=shared-token target=%q mode=%s", targetName, h.identityMode)
+		h.serveSelfReported(c, targetName)
+	case WSIdentityEnroll:
 		tg, cred, err := h.targetSvc.ConsumeEnrollToken(token, targetName)
 		if err != nil {
-			tg, err = h.targetSvc.GetByCredential(token)
-			if err != nil {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid gateway token"})
-				return
-			}
-			if targetName != "" && targetName != tg.Name {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "target name does not match credential"})
-				return
-			}
-		} else {
-			respHeader = http.Header{"X-SDP-Runner-Credential": {cred}}
-			applog.Infof("gateway: target %s consumed one-time enroll token", tg.Name)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid enroll token"})
+			return
 		}
-		h.serveTarget(c, tg, respHeader)
-		return
+		applog.Infof("gateway: WS identity=enroll target=%s mode=%s", tg.Name, h.identityMode)
+		h.serveTarget(c, tg, http.Header{"X-SDP-Runner-Credential": {cred}})
+	case WSIdentityPerTarget:
+		tg, err := h.targetSvc.GetByCredential(token)
+		if err != nil || (targetName != "" && targetName != tg.Name) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid target credential"})
+			return
+		}
+		applog.Infof("gateway: WS identity=per-target target=%s mode=%s", tg.Name, h.identityMode)
+		h.serveTarget(c, tg, nil)
+	default: // auto: historical detection order, with the resolved category logged.
+		if h.gatewayToken != "" && token == h.gatewayToken {
+			applog.Infof("gateway: WS identity=shared-token target=%q mode=auto", targetName)
+			h.serveSelfReported(c, targetName)
+			return
+		}
+		if h.gatewayToken == "" {
+			applog.Infof("gateway: WS identity=dev-no-token target=%q mode=auto", targetName)
+			h.serveSelfReported(c, targetName)
+			return
+		}
+		if tg, cred, err := h.targetSvc.ConsumeEnrollToken(token, targetName); err == nil {
+			applog.Infof("gateway: WS identity=enroll target=%s mode=auto", tg.Name)
+			h.serveTarget(c, tg, http.Header{"X-SDP-Runner-Credential": {cred}})
+			return
+		}
+		tg, err := h.targetSvc.GetByCredential(token)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid gateway token"})
+			return
+		}
+		if targetName != "" && targetName != tg.Name {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "target name does not match credential"})
+			return
+		}
+		applog.Infof("gateway: WS identity=per-target target=%s mode=auto", tg.Name)
+		h.serveTarget(c, tg, nil)
 	}
+}
 
+// serveSelfReported handles the legacy identity source: X-Target-Name plus
+// first-connect auto-enroll. It is shared by the auto and shared-token modes.
+func (h *HubServer) serveSelfReported(c *gin.Context, targetName string) {
 	if targetName == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing X-Target-Name"})
 		return

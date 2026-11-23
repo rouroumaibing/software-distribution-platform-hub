@@ -159,16 +159,60 @@ type EnvironmentMetaStore interface {
 	UniqueByComponentTargetNamespace(componentID, targetID uuid.UUID, namespace string) (envID uuid.UUID, ok bool)
 }
 
+// PipelineRunOptions aggregates every optional collaborator and business
+// policy of PipelineRunService. A dependency is only ever present when its
+// matching *Enabled switch is true; a switch without its dependency is a
+// construction error. This replaces the setter pattern where nil variously
+// meant "disabled", "legacy fallback", "any approver" or "drop event".
+type PipelineRunOptions struct {
+	RolloutRefluxEnabled          bool
+	RolloutStore                  RolloutSnapshotStore
+	EnvironmentAttributionEnabled bool
+	EnvironmentMetaStore          EnvironmentMetaStore
+	ProductionApprovalEnabled     bool
+	ProductionPolicy              ProductionPolicy
+	ArtifactRegistrationEnabled   bool
+	ArtifactRegistry              ArtifactRegistry
+	VariableTierResolutionEnabled bool
+	VarSource                     VarSource
+	ApprovalPolicyEnabled         bool
+	ApprovalPolicyStore           ApprovalPolicyStore
+	ComponentGovernanceEnabled    bool
+	ComponentGuard                ComponentGuard
+	ChangeWindowGuardEnabled      bool
+	ChangeWindowGuard             func() error
+	RunFinishedHookEnabled        bool
+	RunFinishedHook               func(pipelineID uuid.UUID, phase string)
+	NotifyEnabled                 bool
+	NotifySink                    func(evt, subject, title, body string)
+	// JobServiceAccount is injected verbatim; empty keeps the legacy default SA.
+	JobServiceAccount string
+	// RunConcurrencyLimit <= 0 falls back to DefaultRunConcurrencyLimit.
+	RunConcurrencyLimit int
+	// SweepInterval <= 0 uses the 15s default.
+	SweepInterval time.Duration
+}
+
+// Summary renders the effective policy for the startup log.
+func (o PipelineRunOptions) Summary() string {
+	return fmt.Sprintf(
+		"productionApproval=%t approvalPolicy=%t changeWindow=%t componentGovernance=%t "+
+			"variableTiers=%t artifactRegistration=%t rolloutReflux=%t envAttribution=%t "+
+			"finishedHook=%t notify=%t jobSA=%t concurrency=%d sweep=%s",
+		o.ProductionApprovalEnabled, o.ApprovalPolicyEnabled, o.ChangeWindowGuardEnabled,
+		o.ComponentGovernanceEnabled, o.VariableTierResolutionEnabled, o.ArtifactRegistrationEnabled,
+		o.RolloutRefluxEnabled, o.EnvironmentAttributionEnabled, o.RunFinishedHookEnabled,
+		o.NotifyEnabled, o.JobServiceAccount != "", o.RunConcurrencyLimit, o.SweepInterval)
+}
+
 // PipelineRunService intentionally does NOT satisfy common.CRUDService —
 // a run isn't created from arbitrary user JSON (it's assembled server-side
 // from a Pipeline's current stages/tasks + target), and Delete
 // isn't a normal operation on history. Handler wires these methods by hand.
 type PipelineRunService struct {
-	repo         PipelineRunStore
-	taskRepo     TaskRunStore
-	pipelineRepo PipelineDefStore
-	// varSource supplies the component-variable tiers of the trigger-time
-	// param resolution (ui-12 §5.3 / N-26); nil disables them (tests).
+	repo             PipelineRunStore
+	taskRepo         TaskRunStore
+	pipelineRepo     PipelineDefStore
 	varSource        VarSource
 	stageRepo        StageStore
 	taskTemplateRepo TaskTemplateStore
@@ -180,58 +224,20 @@ type PipelineRunService struct {
 	componentMeta    ComponentMetaStore
 	environmentMeta  EnvironmentMetaStore
 
-	// runConcurrencyLimit is the O-41 同 pipeline 最大活跃 run 数（上限 N），
-	// 0 = 用 DefaultRunConcurrencyLimit（run_concurrency.go）。Setter-wired，
-	// 与 productionPolicy 同款：不改构造签名、不动既有测试 fixture。
 	runConcurrencyLimit int
-
-	// productionPolicy is the optional 生产强审批 guard (B-11). Wired with a
-	// setter so the constructor signature — and every existing test fixture —
-	// stays unchanged; nil means "no platform-level production policy".
-	productionPolicy ProductionPolicy
-
-	// finishedHook is the optional run.finished event sink (ui-12 §4.3 /
-	// N-21 事件触发首版：函数调用，无总线). Wired with a setter; called
-	// best-effort after a terminal phase lands — trigger failures must not
-	// poison the status write path.
-	finishedHook func(pipelineID uuid.UUID, phase string)
-
-	// notifySink is the optional §5.2 邮件订阅分发口：终态/待审批事件镜像到
-	// 订阅者的邮件渠道。Best-effort，与 finishedHook 同等地位。
-	notifySink func(evt, subject, title, body string)
-
-	// changeWindowGuard is the optional §5.1 变更窗口闸门：非 nil 时在
-	// Trigger 入口调用，返回非 nil 即拒绝（409 + 原因）。实现在 main 装配层
-	// （读 platform_settings），service 层保持无平台表依赖。
-	changeWindowGuard func() error
-
-	// componentGuard is the optional §6.1 治理守卫：deprecated 组件禁新触发
-	// （保留历史运行）。Nil = 无治理约束（旧库未迁移时放行）。
-	componentGuard ComponentGuard
-
-	// approvalPolicyStore is the optional 审批策略 store (ui-12 §5.1);
-	// nil = 无策略，审批回退「任意审批人」。
+	productionPolicy    ProductionPolicy
+	finishedHook        func(pipelineID uuid.UUID, phase string)
+	notifySink          func(evt, subject, title, body string)
+	changeWindowGuard   func() error
+	componentGuard      ComponentGuard
 	approvalPolicyStore ApprovalPolicyStore
+	artifactRegistry    ArtifactRegistry
+	jobServiceAccount   string
+	sweepInterval       time.Duration
+	rolloutStore        RolloutSnapshotStore
 
-	// artifactRegistry (G-2) registers a task's Produces keys with the
-	// artifact store when the task reaches Succeeded. Setter-wired like
-	// productionPolicy; nil disables registration.
-	artifactRegistry ArtifactRegistry
-
-	// jobServiceAccount (G-1) is injected into every dispatched
-	// PipelineRunSpec.ServiceAccountName. Setter-wired; empty = legacy
-	// behavior (Jobs run as the namespace default SA).
-	jobServiceAccount string
-
-	// sweepInterval controls how often SweepPending retries failed dispatch
-	// jobs. Overridable in tests; defaults to 15s.
-	sweepInterval time.Duration
-
-	// rolloutStore persists runner-reported canary reflux snapshots
-	// (RUNNER-REFLUX-SPEC §3, STATUS #8). Setter-wired like the other
-	// optional collaborators; nil means "reflux storage disabled" and old
-	// runners' summaries (no Rollout field) simply skip it.
-	rolloutStore RolloutSnapshotStore
+	// policySummary is the effective policy captured at construction time.
+	policySummary string
 }
 
 // RolloutSnapshotStore upserts a runner-reported RolloutStatusSummary onto
@@ -240,15 +246,124 @@ type RolloutSnapshotStore interface {
 	UpsertSnapshot(taskRunID uuid.UUID, ts runnerapi.RolloutStatusSummary, at time.Time) error
 }
 
-// SetRolloutStore wires the reflux snapshot store (main wires the concrete
-// repository). Safe to leave unset in tests.
+// PolicySummary returns the effective policy recorded at construction.
+func (s *PipelineRunService) PolicySummary() string { return s.policySummary }
+
+// SetRolloutStore is kept for existing test fixtures. Production wiring uses
+// PipelineRunOptions.RolloutRefluxEnabled with an explicit dependency.
 func (s *PipelineRunService) SetRolloutStore(st RolloutSnapshotStore) { s.rolloutStore = st }
 
-// SetEnvironmentMetaStore wires the run↔environment resolver (main wires an
-// adapter over the environment repository). Nil (default) leaves run rows
-// without environment attribution — the 环境覆盖档 then never applies.
+// SetEnvironmentMetaStore is kept for existing test fixtures. Production
+// wiring uses PipelineRunOptions.EnvironmentAttributionEnabled.
 func (s *PipelineRunService) SetEnvironmentMetaStore(st EnvironmentMetaStore) { s.environmentMeta = st }
 
+// NewPipelineRunServiceWithOptions builds a service from one explicit policy
+// bundle. Each enabled switch must carry its dependency; disabled switches
+// leave the field nil, preserving the established no-op behavior.
+func NewPipelineRunServiceWithOptions(
+	repo PipelineRunStore,
+	taskRepo TaskRunStore,
+	pipelineRepo PipelineDefStore,
+	stageRepo StageStore,
+	taskTemplateRepo TaskTemplateStore,
+	targetSvc TargetStore,
+	dispatcher Dispatcher,
+	dispatchRepo DispatchJobStore,
+	logRepo LogStore,
+	approvalRepo PipelineApprovalStore,
+	componentMeta ComponentMetaStore,
+	opts PipelineRunOptions,
+) (*PipelineRunService, error) {
+	missing := func(name string) error {
+		return fmt.Errorf("pipeline run option %s enabled but dependency is nil", name)
+	}
+	if opts.RolloutRefluxEnabled && opts.RolloutStore == nil {
+		return nil, missing("RolloutRefluxEnabled")
+	}
+	if opts.EnvironmentAttributionEnabled && opts.EnvironmentMetaStore == nil {
+		return nil, missing("EnvironmentAttributionEnabled")
+	}
+	if opts.ProductionApprovalEnabled && opts.ProductionPolicy == nil {
+		return nil, missing("ProductionApprovalEnabled")
+	}
+	if opts.ArtifactRegistrationEnabled && opts.ArtifactRegistry == nil {
+		return nil, missing("ArtifactRegistrationEnabled")
+	}
+	if opts.VariableTierResolutionEnabled && opts.VarSource == nil {
+		return nil, missing("VariableTierResolutionEnabled")
+	}
+	if opts.ApprovalPolicyEnabled && opts.ApprovalPolicyStore == nil {
+		return nil, missing("ApprovalPolicyEnabled")
+	}
+	if opts.ComponentGovernanceEnabled && opts.ComponentGuard == nil {
+		return nil, missing("ComponentGovernanceEnabled")
+	}
+	if opts.ChangeWindowGuardEnabled && opts.ChangeWindowGuard == nil {
+		return nil, missing("ChangeWindowGuardEnabled")
+	}
+	if opts.RunFinishedHookEnabled && opts.RunFinishedHook == nil {
+		return nil, missing("RunFinishedHookEnabled")
+	}
+	if opts.NotifyEnabled && opts.NotifySink == nil {
+		return nil, missing("NotifyEnabled")
+	}
+	sweepInterval := opts.SweepInterval
+	if sweepInterval <= 0 {
+		sweepInterval = 15 * time.Second
+	}
+	s := &PipelineRunService{
+		repo:                repo,
+		taskRepo:            taskRepo,
+		pipelineRepo:        pipelineRepo,
+		stageRepo:           stageRepo,
+		taskTemplateRepo:    taskTemplateRepo,
+		targetSvc:           targetSvc,
+		dispatcher:          dispatcher,
+		dispatchRepo:        dispatchRepo,
+		logRepo:             logRepo,
+		approvalRepo:        approvalRepo,
+		componentMeta:       componentMeta,
+		sweepInterval:       sweepInterval,
+		jobServiceAccount:   opts.JobServiceAccount,
+		runConcurrencyLimit: opts.RunConcurrencyLimit,
+		policySummary:       opts.Summary(),
+	}
+	if opts.RolloutRefluxEnabled {
+		s.rolloutStore = opts.RolloutStore
+	}
+	if opts.EnvironmentAttributionEnabled {
+		s.environmentMeta = opts.EnvironmentMetaStore
+	}
+	if opts.ProductionApprovalEnabled {
+		s.productionPolicy = opts.ProductionPolicy
+	}
+	if opts.ArtifactRegistrationEnabled {
+		s.artifactRegistry = opts.ArtifactRegistry
+	}
+	if opts.VariableTierResolutionEnabled {
+		s.varSource = opts.VarSource
+	}
+	if opts.ApprovalPolicyEnabled {
+		s.approvalPolicyStore = opts.ApprovalPolicyStore
+	}
+	if opts.ComponentGovernanceEnabled {
+		s.componentGuard = opts.ComponentGuard
+	}
+	if opts.ChangeWindowGuardEnabled {
+		s.changeWindowGuard = opts.ChangeWindowGuard
+	}
+	if opts.RunFinishedHookEnabled {
+		s.finishedHook = opts.RunFinishedHook
+	}
+	if opts.NotifyEnabled {
+		s.notifySink = opts.NotifySink
+	}
+	return s, nil
+}
+
+// NewPipelineRunService keeps the original constructor for test fixtures.
+// All optional policies are off; production wiring uses
+// NewPipelineRunServiceWithOptions.
 func NewPipelineRunService(
 	repo PipelineRunStore,
 	taskRepo TaskRunStore,
@@ -262,20 +377,13 @@ func NewPipelineRunService(
 	approvalRepo PipelineApprovalStore,
 	componentMeta ComponentMetaStore,
 ) *PipelineRunService {
-	return &PipelineRunService{
-		repo:             repo,
-		taskRepo:         taskRepo,
-		pipelineRepo:     pipelineRepo,
-		stageRepo:        stageRepo,
-		taskTemplateRepo: taskTemplateRepo,
-		targetSvc:        targetSvc,
-		dispatcher:       dispatcher,
-		dispatchRepo:     dispatchRepo,
-		logRepo:          logRepo,
-		approvalRepo:     approvalRepo,
-		componentMeta:    componentMeta,
-		sweepInterval:    15 * time.Second,
+	s, err := NewPipelineRunServiceWithOptions(repo, taskRepo, pipelineRepo, stageRepo,
+		taskTemplateRepo, targetSvc, dispatcher, dispatchRepo, logRepo, approvalRepo,
+		componentMeta, PipelineRunOptions{})
+	if err != nil {
+		panic(err) // unreachable: zero options enables nothing
 	}
+	return s
 }
 
 // Trigger assembles a PipelineRunSpec from the pipeline's current stages/tasks

@@ -1,11 +1,24 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/db"
+)
+
+// AuthMode selects how the hub authenticates API callers. It is an explicit
+// runtime mode, not a side effect of an unrelated URL being empty.
+type AuthMode string
+
+const (
+	// AuthModeOIDC verifies bearer tokens against the configured Keycloak issuer.
+	AuthModeOIDC AuthMode = "oidc"
+	// AuthModeDev skips OIDC verification (local development only).
+	AuthModeDev AuthMode = "dev"
 )
 
 // Config holds every runtime tunable for the hub. Values come from env vars
@@ -34,8 +47,15 @@ type Config struct {
 	GatewayToken string
 	// DBDSN is the Postgres connection string.
 	DBDSN string
-	// KeycloakIssuer is the OIDC issuer URL. Empty disables auth (dev mode).
+	// AuthMode is the explicit authentication mode (oidc|dev). When unset,
+	// Load derives it from KeycloakIssuer so existing deployments keep their
+	// current behavior (issuer empty => dev).
+	AuthMode AuthMode
+	// KeycloakIssuer is the OIDC issuer URL. Empty in dev mode.
 	KeycloakIssuer string
+	// KeycloakRedirectURI is the console OIDC redirect URI handed to the BFF
+	// session layer. Empty lets the auth setup derive it.
+	KeycloakRedirectURI string
 	// KeycloakClientID is the console's public login client (sdp-console), used
 	// for the password grant and the OIDC code flow.
 	KeycloakClientID string
@@ -101,7 +121,8 @@ type Config struct {
 	// (must be reachable from browsers, i.e. the hub's public address).
 	ArtifactStoreLocalRoot string
 	ArtifactStorePublicURL string
-	// SignSecret authenticates local-driver URLs; falls back to GatewayToken.
+	// SignSecret authenticates local-driver URLs. It is a distinct trust
+	// purpose from GatewayToken and must be set explicitly in local mode.
 	ArtifactStoreSignSecret string
 	// Presigned/signed URL lifetime.
 	ArtifactStoreURLExpiry time.Duration
@@ -142,6 +163,25 @@ type Config struct {
 	// 'queue' policy parks new runs as PendingQueue. Zero falls back to
 	// run service DefaultRunConcurrencyLimit.
 	RunConcurrencyLimit int
+
+	// --- data lifecycle retention (O-37) ------------------------------------
+	// All thresholds default to 0 (disabled). A non-negative value is
+	// validated at startup; negative retention values are rejected.
+	AuditLogRetentionDays    int
+	RunLogRetentionDays      int
+	ArtifactVersionRetention int
+	RetentionGCBatch         int
+	// RetentionGCInterval is the period of the retention loop; 0 disables it.
+	RetentionGCInterval time.Duration
+
+	// --- HTTP edge policy ---------------------------------------------------
+	// RateLimitRPS is the per-IP requests/second budget; 0 disables limiting.
+	RateLimitRPS float64
+	// RateLimitBurst is the token-bucket burst. Computed from RateLimitRPS
+	// when HUB_RATE_LIMIT_BURST is unset (2*rps+1).
+	RateLimitBurst int
+	// CORSOrigins holds the explicit allow-list; empty means CORS untouched.
+	CORSOrigins []string
 
 	// --- hub 协调框架（coordination-design.md §2.8） ------------------------
 	// CoordinationEnabled（SDP_COORDINATION_ENABLED）打开共享 PG 租约两级选主
@@ -184,6 +224,10 @@ type Config struct {
 	PackageVersionConsole string
 	PackageVersionHub     string
 	PackageVersionRunner  string
+
+	// parseIssues records env values that failed strict parsing. Validate
+	// surfaces them so a typo fails startup instead of silently degrading.
+	parseIssues []string
 }
 
 func getenv(key, def string) string {
@@ -209,8 +253,60 @@ func getenvBool(key string, def bool) bool {
 	return def
 }
 
+// strictInt parses an int env var, recording an issue on malformed input.
+func strictInt(key string, def int, issues *[]string) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		*issues = append(*issues, fmt.Sprintf("%s=%q is not an integer", key, v))
+		return def
+	}
+	return n
+}
+
+// strictFloat parses a float env var, recording an issue on malformed input.
+func strictFloat(key string, def float64, issues *[]string) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		*issues = append(*issues, fmt.Sprintf("%s=%q is not a number", key, v))
+		return def
+	}
+	return f
+}
+
 // Load reads configuration from the environment.
 func Load() *Config {
+	var issues []string
+
+	rps := strictFloat("HUB_RATE_LIMIT_RPS", 0, &issues)
+	burstDefault := int(rps*2) + 1
+	burst := strictInt("HUB_RATE_LIMIT_BURST", burstDefault, &issues)
+
+	mode := AuthMode(strings.TrimSpace(getenv("SDP_AUTH_MODE", "")))
+	if mode == "" {
+		if os.Getenv("KEYCLOAK_ISSUER") == "" {
+			mode = AuthModeDev
+		} else {
+			mode = AuthModeOIDC
+		}
+	}
+
+	var corsOrigins []string
+	if raw := os.Getenv("HUB_CORS_ORIGINS"); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				corsOrigins = append(corsOrigins, trimmed)
+			}
+		}
+	}
+
 	return &Config{
 		Addr:                      getenv("HUB_ADDR", ":8080"),
 		TLSCertFile:               os.Getenv("HUB_TLS_CERT_FILE"),
@@ -220,7 +316,9 @@ func Load() *Config {
 		GatewayPath:               getenv("GATEWAY_PATH", "/gateway/ws"),
 		GatewayToken:              os.Getenv("GATEWAY_TOKEN"),
 		DBDSN:                     getenv("DB_DSN", "postgres://sdp:sdp@localhost:5432/sdp?sslmode=disable"),
+		AuthMode:                  mode,
 		KeycloakIssuer:            os.Getenv("KEYCLOAK_ISSUER"),
+		KeycloakRedirectURI:       os.Getenv("KEYCLOAK_REDIRECT_URI"),
 		KeycloakClientID:          getenv("KEYCLOAK_CLIENT_ID", "sdp-console"),
 		KeycloakResourceClientID:  getenv("KEYCLOAK_RESOURCE_CLIENT_ID", "sdp-backend"),
 		KeycloakAdminClientID:     getenv("KEYCLOAK_ADMIN_CLIENT_ID", "sdp-backend"),
@@ -260,6 +358,18 @@ func Load() *Config {
 		RunSweepInterval:    time.Duration(getenvInt("RUN_SWEEP_INTERVAL", 0)) * time.Second,
 		RunConcurrencyLimit: getenvInt("RUN_CONCURRENCY_LIMIT", 0),
 
+		// 数据生命周期保留：默认全关，解析错误由 Validate 报告。
+		AuditLogRetentionDays:    strictInt("HUB_AUDIT_LOG_RETENTION_DAYS", 0, &issues),
+		RunLogRetentionDays:      strictInt("HUB_RUN_LOG_RETENTION_DAYS", 0, &issues),
+		ArtifactVersionRetention: strictInt("HUB_ARTIFACT_VERSION_RETENTION", 0, &issues),
+		RetentionGCBatch:         strictInt("HUB_RETENTION_GC_BATCH", 0, &issues),
+		RetentionGCInterval:      time.Duration(strictInt("HUB_RETENTION_GC_INTERVAL", 0, &issues)) * time.Second,
+
+		// HTTP 边缘策略：RPS=0 关闭限流；burst 默认 2*rps+1。
+		RateLimitRPS:   rps,
+		RateLimitBurst: burst,
+		CORSOrigins:    corsOrigins,
+
 		// 协调框架：默认关闭（§2.8 退化口径——不装配、行为同单实例现状）。
 		CoordinationEnabled:           getenvBool("SDP_COORDINATION_ENABLED", false),
 		CoordinationClusterID:         os.Getenv("SDP_CLUSTER_ID"),
@@ -290,7 +400,34 @@ func Load() *Config {
 		PackageVersionConsole: getenv("PACKAGE_VERSION_CONSOLE", "dev"),
 		PackageVersionHub:     getenv("PACKAGE_VERSION_HUB", "dev"),
 		PackageVersionRunner:  getenv("PACKAGE_VERSION_RUNNER", "dev"),
+
+		parseIssues: issues,
 	}
+}
+
+// Validate checks parsed values and explicit-mode invariants. The hub calls
+// it once at startup so a bad env value is a loud failure, not a silent
+// fallback to a different runtime policy.
+func (c *Config) Validate() error {
+	var errs []string
+	errs = append(errs, c.parseIssues...)
+	if m := c.EffectiveAuthMode(); m != AuthModeOIDC && m != AuthModeDev {
+		errs = append(errs, fmt.Sprintf("SDP_AUTH_MODE=%q: want %q or %q", m, AuthModeOIDC, AuthModeDev))
+	}
+	if c.EffectiveAuthMode() == AuthModeOIDC && c.KeycloakIssuer == "" {
+		errs = append(errs, "oidc auth mode requires KEYCLOAK_ISSUER")
+	}
+	if c.AuditLogRetentionDays < 0 || c.RunLogRetentionDays < 0 ||
+		c.ArtifactVersionRetention < 0 || c.RetentionGCBatch < 0 {
+		errs = append(errs, "retention thresholds and batch must be non-negative")
+	}
+	if c.RateLimitRPS < 0 || c.RateLimitBurst < 0 {
+		errs = append(errs, "rate limit values must be non-negative")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid config: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // DBConfig builds the structured database config consumed by db.Open, folding
@@ -305,6 +442,22 @@ func (c *Config) DBConfig() db.Config {
 	}
 }
 
-// AuthDisabled reports whether OIDC verification should be skipped. True when
-// no KEYCLOAK_ISSUER is set, so the hub boots without a Keycloak realm.
-func (c *Config) AuthDisabled() bool { return c.KeycloakIssuer == "" }
+// EffectiveAuthMode returns the normalized mode. Load derives it from
+// KeycloakIssuer when SDP_AUTH_MODE is unset, so existing deployments need no
+// extra env var.
+func (c *Config) EffectiveAuthMode() AuthMode {
+	if c.AuthMode != "" {
+		return c.AuthMode
+	}
+	if c.KeycloakIssuer == "" {
+		return AuthModeDev
+	}
+	return AuthModeOIDC
+}
+
+// OIDCEnabled reports whether OIDC verification is active.
+func (c *Config) OIDCEnabled() bool { return c.EffectiveAuthMode() == AuthModeOIDC }
+
+// AuthDisabled is a compatibility wrapper kept for callers outside the
+// startup path. Business decisions use the explicit AuthMode fields.
+func (c *Config) AuthDisabled() bool { return !c.OIDCEnabled() }
