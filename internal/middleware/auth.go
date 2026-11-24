@@ -5,11 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-gonic/gin"
 
 	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common"
+	"github.com/rouroumaibing/software-distribution-platform-hub/internal/common/logger"
 )
 
 // contextKeyClaims is where AuthMiddleware stashes the verified token
@@ -58,7 +60,22 @@ type AuthConfig struct {
 	// ClientID is this app's Keycloak client ID (the console's public
 	// client, e.g. "sdp-console"), checked against the token's azp claim.
 	ClientID string
+	// DiscoveryAttempts / DiscoveryInterval bound the discovery retry. Zero
+	// values use defaults (see defaultDiscoveryAttempts). Keycloak warm-up
+	// returns 503/connection-refused while it boots; discovery must ride out
+	// that window rather than treat it as a permanent config error.
+	DiscoveryAttempts int
+	DiscoveryInterval time.Duration
 }
+
+const (
+	// The budget covers the dependency's readiness ceiling: Keycloak's
+	// startupProbe allows failureThreshold=60 × periodSeconds=5s = 300s.
+	// Finishing discovery before that ceiling would let hub give up while
+	// Keycloak is still legitimately warming up.
+	defaultDiscoveryAttempts = 150
+	defaultDiscoveryInterval = 2 * time.Second
+)
 
 // Authenticator verifies bearer tokens against a single Keycloak realm.
 type Authenticator struct {
@@ -99,11 +116,13 @@ func (a *Authenticator) SetSessionVerifier(fn func(*http.Request) (SessionIdenti
 	a.sessionVerifier = fn
 }
 
-// NewAuthenticator fetches the realm's OIDC discovery document once at
-// startup. Fails fast if Keycloak is unreachable or the realm doesn't
-// exist — better to crash on boot than accept unverifiable tokens.
+// NewAuthenticator fetches the realm's OIDC discovery document at startup.
+// Transient failures (Keycloak still booting: 503 / connection refused /
+// realm not imported yet) are retried within a bounded window; permanent
+// misconfiguration (issuer mismatch) fails immediately. It never accepts
+// unverifiable tokens — it only waits for a dependency that is converging.
 func NewAuthenticator(ctx context.Context, cfg AuthConfig) (*Authenticator, error) {
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	provider, err := discoverProvider(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +135,47 @@ func NewAuthenticator(ctx context.Context, cfg AuthConfig) (*Authenticator, erro
 	// audience mapper.
 	verifier := provider.Verifier(&oidc.Config{SkipClientIDCheck: true})
 	return &Authenticator{verifier: verifier, clientID: cfg.ClientID}, nil
+}
+
+// discoverProvider performs a bounded retry around the OIDC discovery fetch.
+// go-oidc exposes no structured status on discovery errors, so the split is:
+// IssuerMismatchError is a deterministic misconfiguration (abort now); every
+// other error is treated as a converging dependency (503, refused, realm not
+// yet imported) and retried until the budget is exhausted. A wrong-but-
+// reachable issuer therefore costs the bounded window before failing, which
+// is the safe trade: transient warm-up must never take the hub down.
+func discoverProvider(ctx context.Context, cfg AuthConfig) (*oidc.Provider, error) {
+	attempts := cfg.DiscoveryAttempts
+	if attempts <= 0 {
+		attempts = defaultDiscoveryAttempts
+	}
+	interval := cfg.DiscoveryInterval
+	if interval <= 0 {
+		interval = defaultDiscoveryInterval
+	}
+
+	var lastErr error
+	for i := 1; i <= attempts; i++ {
+		provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+		if err == nil {
+			return provider, nil
+		}
+		lastErr = err
+		var mismatch *oidc.IssuerMismatchError
+		if errors.As(err, &mismatch) {
+			return nil, err
+		}
+		if i == attempts {
+			break
+		}
+		logger.Warnf("hub: OIDC discovery attempt %d/%d failed (%v); retrying in %s", i, attempts, err, interval)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+	return nil, lastErr
 }
 
 // Middleware verifies the Authorization: Bearer <token> header against
