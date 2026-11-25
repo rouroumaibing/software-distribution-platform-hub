@@ -246,11 +246,11 @@ data:
             {
               "type": "password",
               "value": "sdp@12345",
-              "temporary": true
+              "temporary": false
             }
           ],
           "disableableCredentialTypes": [],
-          "requiredActions": ["UPDATE_PASSWORD"],
+          "requiredActions": [],
           "realmRoles": [
             "default-roles-sdp",
             "platform-admin"

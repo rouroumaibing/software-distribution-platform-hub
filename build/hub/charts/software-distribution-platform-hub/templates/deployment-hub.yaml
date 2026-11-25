@@ -20,6 +20,10 @@ spec:
         app: {{ .Values.basic.component }}
         version: v1
     spec:
+      {{- if .Values.image.imagePullSecrets }}
+      imagePullSecrets:
+        - name: {{ .Values.image.imagePullSecrets }}
+      {{- end }}
       {{- if .Values.auth.resolveHostIp }}
       # dev-only 脚手架：hub 所在集群解析不了 issuer 的对外域名（如本地 kind 没有公司 DNS），
       # 把 <gatewayRoute.hostname> 指到给定 IP（本地 = kind 节点 IP，浏览器端口 :8443 经
@@ -124,6 +128,18 @@ spec:
                 configMapKeyRef:
                   name: package-versions
                   key: runner
+            # 共享 PG 租约两级选主：coordination.enabled=true 时装配（见 values.yaml coordination 注释）。
+            {{ if .Values.coordination.enabled }}
+            - name: SDP_COORDINATION_ENABLED
+              value: "true"
+            - name: SDP_CLUSTER_ID
+              value: {{ required "coordination.enabled=true 时必须设置 coordination.clusterId" .Values.coordination.clusterId | quote }}
+            {{ end }}
+            # 实例锁身份：ResolvePodIP 优先读 POD_IP，fieldRef 注入真实 PodIP
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           image: {{ .Values.image.imageAddr }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
@@ -138,8 +154,10 @@ spec:
               containerPort: {{ .Values.service.containerPort }}
               protocol: TCP
           volumeMounts:
+            {{ if .Values.artifact.pvcEnabled }}
             - name: artifacts
               mountPath: {{ .Values.artifact.localRoot }}
+            {{ end }}
             {{- if .Values.auth.trustedCASecret }}
             - name: sdp-ca
               mountPath: /etc/sdp-ca
@@ -151,9 +169,11 @@ spec:
               readOnly: true
             {{- end }}
       volumes:
+        {{ if .Values.artifact.pvcEnabled }}
         - name: artifacts
           persistentVolumeClaim:
             claimName: {{ .Values.basic.component }}-artifacts
+        {{ end }}
         {{- if .Values.auth.trustedCASecret }}
         - name: sdp-ca
           secret:

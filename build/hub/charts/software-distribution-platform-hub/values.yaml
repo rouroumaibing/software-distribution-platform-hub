@@ -9,6 +9,12 @@ basic:
   component: hub
   replicaCount: 1
 
+# 共享 PG 租约两级选主（集群锁=集体租约任一实例续约即持有 / 实例锁=PodIP 唯一 master）。
+# 开启前必须设 clusterId（hub 启动时强校验）；多副本时 replicaCount > 1。
+coordination:
+  enabled: false
+  clusterId: ""
+
 service:
   containerPort: 8080
   externPort: 8080
@@ -18,6 +24,9 @@ service:
 image:
   imageAddr: harbor.sdpworkflow.com/sdp/software-distribution-platform-hub:v0.0.1
   pullPolicy: IfNotPresent
+  # 私有 registry（SWR/正规 harbor）拉取凭据；CCE 集群预置 default-secret。
+  # 留空则不渲染 imagePullSecrets（公开 registry 场景）。
+  imagePullSecrets: default-secret
 
 resources:
   resources_cpu_requests: 100m
@@ -79,6 +88,10 @@ postgres:
 artifact:
   driver: local
   localRoot: /data/artifacts
+  # PVC 挂载开关：driver=local 单副本默认 true（挂 hub-artifacts RWO 盘）。
+  # 多副本（coordination.enabled=true）必须置 false——RWO 盘 Multi-Attach 会让
+  # 副本起不来；生产多副本应配 S3 兼容存储（driver: s3），届时同样无需本 PVC。
+  pvcEnabled: true
   publicUrl: http://hub.sdp-workflow.svc:8080
   # Dev seed for the HMAC secret used by local-driver signed URLs. The chart
   # creates hub-artifact-sign from this value when no external Secret is set.
@@ -129,6 +142,10 @@ gatewayRoute:
 # 已 vendor 进 charts/keycloak（固定版本，随 hub 一并安装）；console 本期仍 authDisabled，keycloak 先随 hub 起好。
 # 值结构透传 keycloakx chart（子 chart 作用域即 keycloak.*）；DB 接本平台 postgres（sdp-workflow）。
 keycloak:
+  # 私有 registry 拉取凭据，透传 keycloakx 子 chart 的顶层 imagePullSecrets。
+  # keycloakx values.schema.json 要求对象数组 [{name: ...}]，非字符串数组。
+  imagePullSecrets:
+    - name: default-secret
   # 子 chart：官方 codecentric/keycloakx 7.3.2 / appVersion 26.7.4（干净通用版，非华为 CCE fork）。
   # 首次启动的 master realm 管理员（= Keycloak 管理台 /keycloak/admin 的登录账号）：
   # keycloakx 7.x 不提供 init/secrets.admin，须在首次 start 通过 KEYCLOAK_ADMIN* 环境变量引导。

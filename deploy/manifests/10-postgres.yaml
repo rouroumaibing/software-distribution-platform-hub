@@ -40,6 +40,9 @@ spec:
             # dev-only：kind 单机内网 trust 认证；生产 chart 必须改回 scram+secret。
             - name: POSTGRES_HOST_AUTH_METHOD
               value: trust
+            # 云盘挂载点根自带 lost+found，PGDATA 指到子目录避开 initdb 拒绝非空目录。
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
           ports:
             - containerPort: 5432
           volumeMounts:
