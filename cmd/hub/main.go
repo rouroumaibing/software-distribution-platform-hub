@@ -115,9 +115,9 @@ func main() {
 	// 不装配任何协调件，行为与单实例现状等价（§2.8 退化）。分片业务经
 	// coord.AttachWorkload 挂接（ShardSource/TaskConsumer，§2.6 待裁定）。
 	var coord *coordination.Coordinator
-	if cfg.CoordinationEnabled {
+	if cfg.DualClusterEnabled {
 		if cfg.CoordinationClusterID == "" {
-			applog.Fatalf("hub: SDP_COORDINATION_ENABLED=true requires SDP_CLUSTER_ID")
+			applog.Fatalf("hub: ENABLE_DUALCLUSTER=true requires SDP_CLUSTER_ID")
 		}
 		coord = coordination.NewCoordinator(gdb, coordination.Options{
 			ClusterID:       cfg.CoordinationClusterID,
@@ -363,6 +363,7 @@ func main() {
 		taskTemplateRepo: taskTemplateRepo,
 		targetSvc:        targetSvc,
 		dispatcher:       gw,
+		sweepGate:        coordGate(coord),
 		dispatchRepo:     dispatchJobRepo,
 		logRepo:          taskRunLogRepo,
 		approvalRepo:     approvalRepo,
@@ -380,6 +381,19 @@ func main() {
 		notifySink:     notificationSvc.Dispatch,
 		settingStore:   settingStore,
 		triggerRepo:    pipelinerepo.NewTriggerRepository(gdb),
+	})
+	// HTTP pull-claim 回调（§2.6 目标态）：gateway 不依赖 run/service，经闭包
+	// 转换 ClaimedJob 形态。
+	gw.SetClaimHandler(func(ctx context.Context, targetID uuid.UUID) ([]gateway.ClaimedJob, error) {
+		jobs, err := runSvc.ClaimForTarget(ctx, targetID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]gateway.ClaimedJob, 0, len(jobs))
+		for _, j := range jobs {
+			out = append(out, gateway.ClaimedJob{JobID: j.JobID, PipelineRunID: j.PipelineRunID, Payload: j.Payload})
+		}
+		return out, nil
 	})
 	// 身份帧（RUNNER-REFLUX-SPEC §5 / STATUS #2）：写 targets.agent_version；
 	// 若该目标存在 running 的 upgrade op 且上报版本与目标一致 → 对账到 succeeded
@@ -439,7 +453,7 @@ func main() {
 		}
 	})
 	// upgrade/install/approval timeout sweeps for the agent-op ledger.
-	wireAgentOpReconciliation(ctx, agentOpSvc)
+	wireAgentOpReconciliation(ctx, agentOpSvc, coordGate(coord))
 
 	// Background reaper physically deletes expired role bindings (§7.4).
 	go reaper.Run(ctx, cfg.BindingReapInterval)
@@ -764,6 +778,10 @@ func main() {
 	// Runner gateway WebSocket endpoint.
 	r.GET(cfg.GatewayPath, gw.ServeWS)
 
+	// Runner HTTP pull-claim endpoint (coordination-design §2.6 目标态):
+	// 与 WS 推送双轨并存，MarkDispatching 占坑互斥；经网关任意实例可服务。
+	r.POST(cfg.GatewayPath+"/claims", gw.ServeClaim)
+
 	// Webhook 触发器（ui-12 §4.3）：挂根引擎、 bearer 之外 —— X-Webhook-Token
 	// 即鉴权（与 G5 本地制品下载同一「token 即凭证」模式）。
 	r.POST("/api/v1/webhooks/pipeline-triggers/:triggerId", triggerHandler.WebhookInvoke)
@@ -842,6 +860,16 @@ func main() {
 		applog.Errorf("hub: db close error: %v", err)
 	}
 	applog.Infof("hub: server exiting")
+}
+
+// coordGate returns the background-sweep gate (coordination-design §2.6 A 类):
+// 扫描是唯一执行者后台工作，仅 master 执行，standby 静默跳过、接管后自动恢复；
+// 双集群开关关闭（coord == nil）返回 nil = 无条件执行（单实例模式）。
+func coordGate(coord *coordination.Coordinator) func() bool {
+	if coord == nil {
+		return nil
+	}
+	return func() bool { return coord.Role() == coordination.RoleMaster }
 }
 
 func truncate(s string, n int) string {

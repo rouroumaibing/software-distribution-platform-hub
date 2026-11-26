@@ -134,7 +134,7 @@ func wireRetentionGC(ctx context.Context, cfg *config.Config, gdb *gorm.DB) *ret
 
 // wireAgentOpReconciliation runs the two best-effort timeout sweeps for the
 // agent operation ledger.
-func wireAgentOpReconciliation(ctx context.Context, agentOpSvc *targetsvc.AgentOpService) {
+func wireAgentOpReconciliation(ctx context.Context, agentOpSvc *targetsvc.AgentOpService, sweepGate func() bool) {
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
@@ -143,6 +143,9 @@ func wireAgentOpReconciliation(ctx context.Context, agentOpSvc *targetsvc.AgentO
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if sweepGate != nil && !sweepGate() {
+					continue // standby 实例静默跳过，接管后自动恢复
+				}
 				if err := agentOpSvc.SweepUpgradeTimeouts(ctx, 15*time.Minute); err != nil {
 					applog.Infof("agentop: upgrade timeout sweep: %v", err)
 				}
@@ -199,8 +202,10 @@ type runServiceDeps struct {
 	vars             runsvc.VarSource
 	componentGuard   runsvc.ComponentGuard
 	notifySink       func(evt, subject, title, body string)
-	settingStore     platform.SettingStore
-	triggerRepo      pipelinesvc.TriggerStore
+	// sweepGate 由协调框架装配方注入（Role()==master），nil = 无条件执行。
+	sweepGate    func() bool
+	settingStore platform.SettingStore
+	triggerRepo  pipelinesvc.TriggerStore
 }
 
 // wirePipelineRuntime builds the run service from one explicit Options bundle
@@ -245,6 +250,10 @@ func wirePipelineRuntime(ctx context.Context, cfg *config.Config, deps runServic
 		applog.Fatalf("hub: pipeline run policy invalid: %v", err)
 	}
 	applog.Infof("hub: pipeline run service policy: %s", runSvc.PolicySummary())
+
+	if deps.sweepGate != nil {
+		runSvc.SetSweepGate(deps.sweepGate)
+	}
 
 	go runSvc.SweepPending(ctx)
 	go runSvc.RunApprovalTimeouts(ctx, cfg.ApprovalTimeoutInterval)

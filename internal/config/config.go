@@ -184,10 +184,10 @@ type Config struct {
 	CORSOrigins []string
 
 	// --- hub 协调框架（coordination-design.md §2.8） ------------------------
-	// CoordinationEnabled（SDP_COORDINATION_ENABLED）打开共享 PG 租约两级选主
+	// DualClusterEnabled（ENABLE_DUALCLUSTER）打开共享 PG 租约两级选主
 	// （集群锁 + 实例锁）与分片消费框架；关闭（默认）时不装配任何协调件，
 	// 行为与单实例现状等价。
-	CoordinationEnabled bool
+	DualClusterEnabled bool
 	// CoordinationClusterID（SDP_CLUSTER_ID）是集群锁身份：主备两套部署取
 	// 不同值；启用协调时必填。
 	CoordinationClusterID string
@@ -371,7 +371,7 @@ func Load() *Config {
 		CORSOrigins:    corsOrigins,
 
 		// 协调框架：默认关闭（§2.8 退化口径——不装配、行为同单实例现状）。
-		CoordinationEnabled:           getenvBool("SDP_COORDINATION_ENABLED", false),
+		DualClusterEnabled:            getenvBool("ENABLE_DUALCLUSTER", false),
 		CoordinationClusterID:         os.Getenv("SDP_CLUSTER_ID"),
 		CoordinationRenewalInterval:   time.Duration(getenvInt("SDP_COORDINATION_RENEWAL_INTERVAL", 2)) * time.Second,
 		CoordinationLeaseTTL:          time.Duration(getenvInt("SDP_COORDINATION_LEASE_TTL", 10)) * time.Second,

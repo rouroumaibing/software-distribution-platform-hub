@@ -76,6 +76,9 @@ func (s *PipelineRunService) RunBackground(ctx context.Context, interval time.Du
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !s.gated() {
+				continue // standby 实例静默跳过，接管后自动恢复
+			}
 			if _, err := s.SweepRunTimeouts(ctx, time.Now()); err != nil {
 				applog.Warnf("run-timeout sweep: %v", err)
 			}

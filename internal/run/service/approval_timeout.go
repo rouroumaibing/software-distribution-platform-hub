@@ -186,6 +186,9 @@ func (s *PipelineRunService) RunApprovalTimeouts(ctx context.Context, interval t
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !s.gated() {
+				continue // standby 实例静默跳过，接管后自动恢复
+			}
 			if _, err := s.SweepApprovalTimeouts(ctx, time.Now()); err != nil {
 				applog.Warnf("approval-timeout: sweep failed: %v", err)
 			}

@@ -130,7 +130,7 @@ spec:
                   key: runner
             # 共享 PG 租约两级选主：coordination.enabled=true 时装配（见 values.yaml coordination 注释）。
             {{ if .Values.coordination.enabled }}
-            - name: SDP_COORDINATION_ENABLED
+            - name: ENABLE_DUALCLUSTER
               value: "true"
             - name: SDP_CLUSTER_ID
               value: {{ required "coordination.enabled=true 时必须设置 coordination.clusterId" .Values.coordination.clusterId | quote }}

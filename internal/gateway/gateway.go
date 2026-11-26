@@ -80,6 +80,7 @@ type HubServer struct {
 	conns    map[uuid.UUID]*websocket.Conn
 	statusH  StatusHandler
 	logH     LogHandler
+	claimH   ClaimHandler
 	connectH ConnectHandler
 	// agent op lifecycle reports (§9.5 / §9.9, UNIMPLEMENTED-MODULES-PLAN §16.5)
 	opStatusH AgentOpStatusHandler

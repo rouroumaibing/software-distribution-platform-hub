@@ -236,6 +236,11 @@ type PipelineRunService struct {
 	sweepInterval       time.Duration
 	rolloutStore        RolloutSnapshotStore
 
+	// sweepGate 为 nil 时后台扫描无条件执行（单实例 / 双集群开关关闭）。
+	// 启用协调框架时由装配方注入 Role()==master 判断：扫描是唯一执行者
+	// 后台工作，standby 静默跳过，接管后自动恢复。
+	sweepGate func() bool
+
 	// policySummary is the effective policy captured at construction time.
 	policySummary string
 }
@@ -1169,6 +1174,60 @@ func (s *PipelineRunService) DrainTarget(ctx context.Context, targetID uuid.UUID
 	return nil
 }
 
+// SetSweepGate installs the background-sweep gate (coordination Role check).
+// See the sweepGate field comment.
+func (s *PipelineRunService) SetSweepGate(gate func() bool) { s.sweepGate = gate }
+
+// gated reports whether background sweeps may run on this instance.
+func (s *PipelineRunService) gated() bool { return s.sweepGate == nil || s.sweepGate() }
+
+// ClaimedJob is one dispatch job handed to a Runner via the HTTP claim
+// endpoint: the full apply payload plus the identifiers the Runner mirrors
+// back in status reports.
+type ClaimedJob struct {
+	JobID         uuid.UUID       `json:"job_id"`
+	PipelineRunID uuid.UUID       `json:"pipeline_run_id"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
+// ClaimForTarget hands every pending/failed-due dispatch job of a target to
+// the caller (Runner pull path, coordination-design §2.6 target state). It
+// shares MarkDispatching occupancy with the WS push path, so a job is
+// delivered by exactly one of the two tracks; a claimed job is marked
+// dispatched immediately after the payload is read — parity with the push
+// path, where MarkDispatched follows a successful WS write.
+func (s *PipelineRunService) ClaimForTarget(_ context.Context, targetID uuid.UUID) ([]*ClaimedJob, error) {
+	jobs, err := s.dispatchRepo.ListPendingByTarget(targetID)
+	if err != nil {
+		return nil, err
+	}
+	var claimed []*ClaimedJob
+	for i := range jobs {
+		job := jobs[i]
+		affected, err := s.dispatchRepo.MarkDispatching(job.ID)
+		if err != nil {
+			return claimed, err
+		}
+		if affected == 0 {
+			continue // claimed by the push path or another claim caller
+		}
+		if !json.Valid(job.Payload) {
+			// Corrupt payload is unrecoverable; retire the job (same as tryDeliver).
+			_ = s.dispatchRepo.MarkDead(job.ID, "corrupt payload")
+			continue
+		}
+		if err := s.dispatchRepo.MarkDispatched(job.ID); err != nil {
+			return claimed, err
+		}
+		claimed = append(claimed, &ClaimedJob{
+			JobID:         job.ID,
+			PipelineRunID: job.PipelineRunID,
+			Payload:       json.RawMessage(job.Payload),
+		})
+	}
+	return claimed, nil
+}
+
 // SweepPending retries failed dispatch jobs whose backoff has elapsed. It
 // blocks until ctx is cancelled (graceful shutdown).
 func (s *PipelineRunService) SweepPending(ctx context.Context) {
@@ -1179,6 +1238,9 @@ func (s *PipelineRunService) SweepPending(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !s.gated() {
+				continue // standby 实例静默跳过，接管后自动恢复
+			}
 			s.sweepOnce(ctx)
 		}
 	}
